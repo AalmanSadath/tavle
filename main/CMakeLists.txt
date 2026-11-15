@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "board.c" "display.c" "layout.c" "widgets.c" "settings.c" "net.c" "web.c" "ui.c" "store.c" "fetch.c" "sources.c" "src_moonraker.c" "timesync.c" "png.c"
+    SRCS "main.c" "board.c" "button.c" "display.c" "layout.c" "widgets.c" "settings.c" "net.c" "web.c" "ui.c" "store.c" "fetch.c" "sources.c" "src_moonraker.c" "timesync.c" "png.c"
     INCLUDE_DIRS "."
     EMBED_TXTFILES "layout.json" "web/setup.html"
     REQUIRES esp_driver_spi esp_driver_gpio esp_lcd esp_timer json nvs_flash esp_wifi

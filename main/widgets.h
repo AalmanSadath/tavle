@@ -33,8 +33,12 @@ typedef struct {
     int count;
 } screen_view_t;
 
-/* Builds one LVGL screen per layout screen. Call with the LVGL lock held. */
-void widgets_build(lv_display_t *disp, const layout_t *layout, screen_view_t *views);
+/* Sets the theme. Call once, with the LVGL lock held. */
+void widgets_init(lv_display_t *disp);
+
+/* Builds the LVGL screen for one layout screen, every value "--". Call with
+ * the LVGL lock held. */
+void widgets_build_screen(const layout_screen_t *ls, screen_view_t *view);
 
 void widget_set_number(widget_view_t *w, double v);
 void widget_set_text(widget_view_t *w, const char *s);
@@ -65,6 +69,6 @@ void widgets_update_clocks(screen_view_t *view, const struct tm *now);
 /* Changes every widget on the screen, for the refresh benchmark. */
 void widgets_bench_step(screen_view_t *view, int frame);
 
-/* Deletes the screens built by widgets_build and frees their pictures. Call
- * with the LVGL lock held, after another screen has been loaded. */
+/* Deletes screens built by widgets_build_screen and frees their pictures.
+ * Call with the LVGL lock held, after another screen has been loaded. */
 void widgets_destroy(screen_view_t *views, int count);

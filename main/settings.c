@@ -62,6 +62,10 @@ esp_err_t settings_init(void)
         if (!s_cur.tz[0]) {
             strlcpy(s_cur.tz, "UTC0", sizeof(s_cur.tz));
         }
+        uint8_t keep;
+        if (nvs_get_u8(h, "keep_run", &keep) == ESP_OK && keep <= KEEP_OFF) {
+            s_cur.keep_running = keep;
+        }
         uint16_t n;
         if (nvs_get_u16(h, "interval", &n) == ESP_OK &&
             n >= SETTINGS_INTERVAL_MIN && n <= SETTINGS_INTERVAL_MAX) {
@@ -101,6 +105,7 @@ esp_err_t settings_save(const settings_t *s)
     if (err == ESP_OK) err = nvs_set_str(h, "layout_url", s->layout_url);
     if (err == ESP_OK) err = nvs_set_u16(h, "interval", s->interval_min);
     if (err == ESP_OK) err = nvs_set_str(h, "tz", s->tz);
+    if (err == ESP_OK) err = nvs_set_u8(h, "keep_run", s->keep_running);
     if (err == ESP_OK) {
         if (s->has_admin) {
             err = nvs_set_blob(h, "admin_salt", s->admin_salt, sizeof(s->admin_salt));
@@ -160,4 +165,21 @@ bool settings_check_admin(const char *password)
         diff |= h[i] ^ s.admin_hash[i]; /* constant time */
     }
     return diff == 0;
+}
+
+const char *keep_running_name(keep_running_t k)
+{
+    static const char *const names[] = {"auto", "on", "off"};
+    return k <= KEEP_OFF ? names[k] : "auto";
+}
+
+bool keep_running_from_name(const char *s, keep_running_t *out)
+{
+    for (keep_running_t k = KEEP_AUTO; k <= KEEP_OFF; k++) {
+        if (s && strcmp(s, keep_running_name(k)) == 0) {
+            *out = k;
+            return true;
+        }
+    }
+    return false;
 }

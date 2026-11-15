@@ -1,3 +1,4 @@
+#include "button.h"
 #include "display.h"
 #include "esp_heap_caps.h"
 #include "esp_event.h"
@@ -64,6 +65,7 @@ void app_main(void)
     store_init(); /* without it the device still runs on the built-in layout */
     ESP_ERROR_CHECK(fetch_start());
     ESP_ERROR_CHECK(ui_start(disp));
+    ESP_ERROR_CHECK(button_start());
     settings_t s;
     settings_get(&s);
     timesync_set_tz(s.tz);

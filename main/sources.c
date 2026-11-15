@@ -22,13 +22,15 @@ typedef struct {
 
 static running_t s_running[LAYOUT_MAX_SOURCES];
 static int s_count;
+static const layout_t *s_layout;
 static source_status_t s_status[LAYOUT_MAX_SOURCES];
 static SemaphoreHandle_t s_lock;
-static volatile unsigned s_gen;
+static volatile unsigned s_gen[LAYOUT_MAX_SOURCES];
+static bool s_on[LAYOUT_MAX_SOURCES]; /* wanted and started (driver may have failed) */
 
 const char *src_state_name(src_state_t state)
 {
-    static const char *const names[] = {"starting", "online", "offline", "not built"};
+    static const char *const names[] = {"starting", "online", "offline", "not built", "stopped"};
     return names[state];
 }
 
@@ -57,15 +59,21 @@ static void set_status(int index, src_state_t state, const char *detail)
     xSemaphoreGive(s_lock);
 }
 
-void sources_stop(void)
+static void stop_one(int i)
+{
+    if (s_running[i].drv && s_running[i].ctx) {
+        s_running[i].drv->stop(s_running[i].ctx); /* no reports after this */
+    }
+    s_running[i] = (running_t){0};
+    s_on[i] = false;
+    s_gen[i]++;
+}
+
+void sources_stop_all(void)
 {
     for (int i = 0; i < s_count; i++) {
-        if (s_running[i].drv && s_running[i].ctx) {
-            s_running[i].drv->stop(s_running[i].ctx); /* no reports after this */
-        }
-        s_running[i] = (running_t){0};
+        stop_one(i);
     }
-    s_gen++;
 }
 
 /* Collects the distinct paths widgets read from one source. */
@@ -92,14 +100,15 @@ static int collect_paths(const layout_t *l, const char *name, const char **out, 
     return n;
 }
 
-void sources_start(const layout_t *layout)
+void sources_load(const layout_t *layout)
 {
     if (!s_lock) {
         s_lock = xSemaphoreCreateMutex();
     }
-    sources_stop();
+    sources_stop_all();
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_layout = layout;
     s_count = layout->source_count;
     memset(s_status, 0, sizeof(s_status));
     for (int i = 0; i < s_count; i++) {
@@ -107,55 +116,73 @@ void sources_start(const layout_t *layout)
         const char *t = cJSON_GetStringValue(
             cJSON_GetObjectItemCaseSensitive(layout->sources[i].config, "type"));
         strlcpy(s_status[i].type, t ? t : "", sizeof(s_status[i].type));
+        s_status[i].state = SRC_STOPPED;
+        strlcpy(s_status[i].detail, "no screen running uses it", sizeof(s_status[i].detail));
     }
     xSemaphoreGive(s_lock);
+}
 
+static void start_one(int i)
+{
+    const layout_source_t *src = &s_layout->sources[i];
+    const char *paths[LAYOUT_MAX_SCREENS * LAYOUT_MAX_WIDGETS];
+    int n = collect_paths(s_layout, src->name, paths, sizeof(paths) / sizeof(paths[0]));
+
+    s_gen[i]++;
+    s_on[i] = true;
+    const source_driver_t *drv = find_driver(src->type);
+    if (!drv) {
+        ESP_LOGW(TAG, "source '%s': type not built yet", src->name);
+        set_status(i, SRC_NOT_BUILT, "this source type is not built yet");
+        return;
+    }
+    set_status(i, SRC_STARTING, "");
+    s_running[i].drv = drv;
+    s_running[i].ctx = drv->start(i, src->config, paths, n);
+    if (!s_running[i].ctx) {
+        s_running[i].drv = NULL;
+        set_status(i, SRC_OFFLINE, "could not start");
+    }
+}
+
+void sources_apply(uint16_t want)
+{
     for (int i = 0; i < s_count; i++) {
-        const layout_source_t *src = &layout->sources[i];
-        const char *paths[LAYOUT_MAX_SCREENS * LAYOUT_MAX_WIDGETS];
-        int n = collect_paths(layout, src->name, paths, sizeof(paths) / sizeof(paths[0]));
-
-        const source_driver_t *drv = find_driver(src->type);
-        if (!drv) {
-            ESP_LOGW(TAG, "source '%s': type not built yet", src->name);
-            set_status(i, SRC_NOT_BUILT, "this source type is not built yet");
-            continue;
-        }
-        if (n == 0) {
-            set_status(i, SRC_OFFLINE, "no widget uses this source");
-            continue;
-        }
-        set_status(i, SRC_STARTING, "");
-        s_running[i].drv = drv;
-        s_running[i].ctx = drv->start(i, src->config, paths, n);
-        if (!s_running[i].ctx) {
-            s_running[i].drv = NULL;
-            if (s_status[i].state == SRC_STARTING) {
-                set_status(i, SRC_OFFLINE, "could not start");
-            }
+        bool on = want & (1u << i);
+        bool tried = s_on[i];
+        if (!on && tried) {
+            stop_one(i);
+            set_status(i, SRC_STOPPED, "no screen running uses it");
+        } else if (on && !tried) {
+            start_one(i);
         }
     }
 }
 
-unsigned sources_generation(void)
+bool sources_running(int index)
 {
-    return s_gen;
+    return index >= 0 && index < s_count && s_running[index].ctx;
+}
+
+unsigned sources_generation(int index)
+{
+    return index >= 0 && index < LAYOUT_MAX_SOURCES ? s_gen[index] : 0;
 }
 
 void sources_report_number(int index, const char *path, double v)
 {
-    ui_source_value(s_gen, index, path, true, v, NULL);
+    ui_source_value(s_gen[index], index, path, true, v, NULL);
 }
 
 void sources_report_text(int index, const char *path, const char *s)
 {
-    ui_source_value(s_gen, index, path, false, 0, s);
+    ui_source_value(s_gen[index], index, path, false, 0, s);
 }
 
 void sources_report_state(int index, src_state_t state, const char *detail)
 {
     set_status(index, state, detail);
-    ui_source_state(s_gen, index, state == SRC_ONLINE);
+    ui_source_state(s_gen[index], index, state == SRC_ONLINE);
 }
 
 int sources_get_status(source_status_t *out, int max)

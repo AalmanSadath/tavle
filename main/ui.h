@@ -17,6 +17,21 @@ esp_err_t ui_start(lv_display_t *disp);
 void ui_net_status(const net_status_t *status);
 void ui_request_reload(void);
 
+/* Safe from any task: go to the next screen (button, setup page). */
+void ui_next_screen(void);
+
+/* Safe from any task: a setting the UI uses has changed. */
+void ui_settings_changed(void);
+
+typedef struct {
+    char name[24];      /* visible screen */
+    int index, count;   /* index from 0 */
+    bool keep_running;  /* value in use */
+    const char *keep_from; /* "setting", "layout" or "board default" */
+} ui_screen_info_t;
+
+void ui_get_screen_info(ui_screen_info_t *out);
+
 /* Hands a layout to the UI task, which parses it and shows it if usable.
  * Takes ownership of json (malloc'd). */
 void ui_set_layout(char *json, size_t len, layout_src_t src);

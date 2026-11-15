@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "cJSON.h"
 
@@ -11,6 +12,8 @@
 #define LAYOUT_MAX_SCREENS 8
 #define LAYOUT_MAX_WIDGETS (LAYOUT_COLS * LAYOUT_ROWS)
 #define LAYOUT_MAX_SERIES  3 /* lines in one graph */
+
+_Static_assert(LAYOUT_MAX_SOURCES <= 16, "source_mask is 16 bits");
 
 typedef enum {
     SOURCE_HTTP_JSON,
@@ -56,6 +59,8 @@ typedef struct {
     const char *name;
     layout_widget_t widgets[LAYOUT_MAX_WIDGETS];
     int widget_count;
+    uint16_t source_mask; /* bit i: the screen reads sources[i] */
+    int image_count;
 } layout_screen_t;
 
 typedef struct {
@@ -64,10 +69,12 @@ typedef struct {
     int source_count;
     layout_screen_t screens[LAYOUT_MAX_SCREENS];
     int screen_count;
+    int keep_running; /* layout default for "keep other screens running": -1 none, 0, 1 */
 } layout_t;
 
 /* Parses layout JSON. Invalid widgets and sources are logged and skipped;
- * returns false only when nothing usable is left. */
+ * returns false when nothing usable is left, or when a screen needs more
+ * sources or image widgets than the board runs at once. */
 bool layout_parse(const char *json, size_t len, layout_t *out);
 void layout_free(layout_t *layout);
 

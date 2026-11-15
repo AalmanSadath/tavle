@@ -15,12 +15,19 @@
 #define SETTINGS_INTERVAL_DEF   5
 #define SETTINGS_TZ_MAX         48
 
+typedef enum {
+    KEEP_AUTO, /* the layout's "keep_running", else the board default */
+    KEEP_ON,
+    KEEP_OFF,
+} keep_running_t;
+
 typedef struct {
     char ssid[SETTINGS_SSID_MAX + 1];
     char wifi_pass[SETTINGS_WIFI_PASS_MAX + 1];
     char layout_url[SETTINGS_URL_MAX + 1];
     uint16_t interval_min;
     char tz[SETTINGS_TZ_MAX + 1];  /* POSIX TZ string */
+    keep_running_t keep_running;   /* keep other screens running */
     bool has_admin;
     uint8_t admin_salt[16];
     uint8_t admin_hash[32];
@@ -42,3 +49,8 @@ void settings_set_admin(settings_t *s, const char *password);
 bool settings_check_admin(const char *password);
 
 bool settings_has_admin(void);
+
+const char *keep_running_name(keep_running_t k);
+
+/* Parses "auto", "on" or "off"; false for anything else. */
+bool keep_running_from_name(const char *s, keep_running_t *out);

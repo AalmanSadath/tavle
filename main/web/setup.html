@@ -58,6 +58,13 @@ progress{width:100%;margin-top:10px}
   <input id="url" type="url" maxlength="256" placeholder="http://printer.local/server/files/config/tavle.json">
   <label for="interval">check every (minutes)</label>
   <input id="interval" type="number" min="1" max="1440" step="1">
+  <label for="keep">keep other screens running</label>
+  <select id="keep">
+    <option value="auto">auto (layout, else board default)</option>
+    <option value="on">on</option>
+    <option value="off">off</option>
+  </select>
+  <p class="hint">on: screens viewed recently keep their sources running, as far as the board allows, so switching back is instant. off: only the screen on show runs.</p>
 </section>
 
 <section>
@@ -81,6 +88,7 @@ progress{width:100%;margin-top:10px}
   <div class="row">
     <button id="save" type="button">save</button>
     <button class="alt" id="reload" type="button">reload layout</button>
+    <button class="alt" id="next" type="button">next screen</button>
     <button class="alt" id="reboot" type="button">reboot</button>
   </div>
   <p class="msg" id="msg"></p>
@@ -132,6 +140,8 @@ function showStatus(s) {
     ["layout", s.layout_source + ", " + s.layout_bytes + " bytes" +
       (s.layout_age_s >= 0 ? ", fetched " + ago(s.layout_age_s) : "")],
     ["layout error", s.layout_error || "none"],
+    ["screen", s.screen.count ? s.screen.name + " (" + (s.screen.index + 1) + " of " + s.screen.count + ")" : "none"],
+    ["keep screens running", (s.keep_running_on ? "on" : "off") + " (" + s.keep_running_from + ")"],
     ["time", s.time || "not set yet"],
     ["board", s.board.name + ", " + plural(s.board.max_sources, "source") + ", " +
       plural(s.board.max_images, "image")],
@@ -160,6 +170,7 @@ async function refresh(fillForm) {
     $("url").value = s.layout_url;
     $("interval").value = s.interval;
     $("tz").value = s.tz;
+    $("keep").value = s.keep_running;
     $("wpass").placeholder = s.ssid ? "unchanged" : "";
   }
   return s;
@@ -218,6 +229,7 @@ $("save").onclick = async () => {
   body.interval = iv;
   const tz = $("tz").value.trim();
   if (tz) body.tz = tz;
+  body.keep_running = $("keep").value;
 
   const a1 = $("apass").value, a2 = $("apass2").value;
   if ($("aclear").checked) {
@@ -242,6 +254,11 @@ $("save").onclick = async () => {
     }
   } catch (e) { say(msg, e.message, "err"); }
   $("save").disabled = false;
+};
+
+$("next").onclick = async () => {
+  try { await api("/api/screen", {method: "POST"}); setTimeout(() => refresh(false).catch(() => {}), 1000); }
+  catch (e) { say($("msg"), e.message, "err"); }
 };
 
 $("reload").onclick = async () => {
