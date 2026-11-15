@@ -2,11 +2,14 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #define GAP          6
 #define GRAPH_POINTS 30
+#define SERIES_COLORS ((const lv_color_t[]){lv_color_hex(0xff9f0a), lv_color_hex(0x0a84ff), \
+                                             lv_color_hex(0x30d158)})
 
 LV_FONT_DECLARE(lv_font_montserrat_14);
 LV_FONT_DECLARE(lv_font_montserrat_20);
@@ -15,6 +18,8 @@ LV_FONT_DECLARE(lv_font_montserrat_28);
 static const int32_t s_cols[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
 static const int32_t s_rows[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
                                  LV_GRID_TEMPLATE_LAST};
+
+static void set_label(lv_obj_t *l, const char *text);
 
 static lv_style_t s_cell;
 static lv_style_t s_caption;
@@ -131,8 +136,9 @@ static void build_widget(lv_obj_t *grid, widget_view_t *w)
         lv_chart_set_range(w->shape, LV_CHART_AXIS_PRIMARY_Y, (int32_t)d->min, (int32_t)d->max);
         lv_obj_set_style_size(w->shape, 0, 0, LV_PART_INDICATOR);
         lv_obj_set_style_pad_all(w->shape, 2, 0);
-        w->series = lv_chart_add_series(w->shape, lv_palette_main(LV_PALETTE_ORANGE),
-                                        LV_CHART_AXIS_PRIMARY_Y);
+        for (int i = 0; i < d->path_count; i++) {
+            w->series[i] = lv_chart_add_series(w->shape, SERIES_COLORS[i], LV_CHART_AXIS_PRIMARY_Y);
+        }
         break;
 
     case WIDGET_ICON:
@@ -205,7 +211,7 @@ void widget_set_number(widget_view_t *w, double v)
     switch (d->kind) {
     case WIDGET_VALUE:
         format_number(d, "%.1f", v, buf, sizeof(buf));
-        lv_label_set_text(w->value, buf);
+        set_label(w->value, buf);
         break;
     case WIDGET_PROGRESS:
     case WIDGET_GAUGE: {
@@ -215,7 +221,7 @@ void widget_set_number(widget_view_t *w, double v)
         } else {
             snprintf(buf, sizeof(buf), "%.0f%%", f * 100);
         }
-        lv_label_set_text(w->value, buf);
+        set_label(w->value, buf);
         if (d->kind == WIDGET_PROGRESS) {
             lv_bar_set_value(w->shape, (int32_t)(f * 1000), LV_ANIM_OFF);
         } else {
@@ -224,11 +230,11 @@ void widget_set_number(widget_view_t *w, double v)
         break;
     }
     case WIDGET_GRAPH:
-        lv_chart_set_next_value(w->shape, w->series, (int32_t)lround(v));
+        widget_graph_push(w, 0, v);
         break;
     case WIDGET_TEXT:
         format_number(d, "%g", v, buf, sizeof(buf));
-        lv_label_set_text(w->value, buf);
+        set_label(w->value, buf);
         break;
     case WIDGET_ICON:
     case WIDGET_CLOCK:
@@ -261,17 +267,31 @@ void widget_set_text(widget_view_t *w, const char *s)
                 break;
             }
         }
-        lv_label_set_text(w->value, sym);
-        lv_label_set_text(w->caption, s);
+        set_label(w->value, sym);
+        set_label(w->caption, s);
         break;
     }
     case WIDGET_TEXT:
     case WIDGET_VALUE:
     case WIDGET_CLOCK:
-        lv_label_set_text(w->value, s);
+        set_label(w->value, s);
         break;
     default:
         break;
+    }
+}
+
+void widget_graph_push(widget_view_t *w, int series, double v)
+{
+    if (w->def->kind == WIDGET_GRAPH && series < w->def->path_count && w->series[series]) {
+        lv_chart_set_next_value(w->shape, w->series[series], (int32_t)lround(v));
+    }
+}
+
+static void set_label(lv_obj_t *l, const char *text)
+{
+    if (strcmp(lv_label_get_text(l), text) != 0) {
+        lv_label_set_text(l, text); /* unchanged text would still redraw */
     }
 }
 
@@ -282,59 +302,67 @@ static void set_clock(widget_view_t *w, int hour, int min)
     if (strftime(buf, sizeof(buf), w->def->format, &t) == 0) {
         buf[0] = '\0';
     }
-    lv_label_set_text(w->value, buf);
+    set_label(w->value, buf);
 }
 
-static const struct {
-    const char *path;
-    double number;
-    const char *text;
-} PLACEHOLDERS[] = {
-    {"print_stats.filename", 0, "tavle_test.gcode"},
-    {"print_stats.state", 0, "printing"},
-    {"extruder.temperature", 215.3, NULL},
-    {"heater_bed.temperature", 60.1, NULL},
-    {"fan.speed", 0.62, NULL},
-    {"display_status.progress", 0.42, NULL},
-};
-
-static void fill_one(widget_view_t *w)
+void widgets_reset(screen_view_t *view)
 {
-    const layout_widget_t *d = w->def;
-    if (d->kind == WIDGET_CLOCK) {
-        set_clock(w, 12, 34);
-        return;
-    }
-
-    double number = (d->min + d->max) / 2;
-    const char *text = "tavle";
-    for (size_t i = 0; i < sizeof(PLACEHOLDERS) / sizeof(PLACEHOLDERS[0]); i++) {
-        if (strcmp(d->path, PLACEHOLDERS[i].path) == 0) {
-            number = PLACEHOLDERS[i].number;
-            text = PLACEHOLDERS[i].text;
+    for (int i = 0; i < view->count; i++) {
+        widget_view_t *w = &view->widgets[i];
+        memset(w->has_last, 0, sizeof(w->has_last));
+        w->stale = false;
+        w->next_sample_us = 0;
+        switch (w->def->kind) {
+        case WIDGET_TEXT:
+        case WIDGET_VALUE:
+            lv_label_set_text(w->value, "--");
+            break;
+        case WIDGET_PROGRESS:
+            lv_bar_set_value(w->shape, 0, LV_ANIM_OFF);
+            lv_label_set_text(w->value, "--");
+            break;
+        case WIDGET_GAUGE:
+            lv_arc_set_value(w->shape, 0);
+            lv_label_set_text(w->value, "--");
+            break;
+        case WIDGET_GRAPH:
+            for (int k = 0; k < w->def->path_count; k++) {
+                lv_chart_set_all_value(w->shape, w->series[k], LV_CHART_POINT_NONE);
+            }
+            break;
+        case WIDGET_ICON:
+            lv_label_set_text(w->value, "--");
+            lv_label_set_text(w->caption, "");
+            break;
+        case WIDGET_CLOCK:
+            lv_label_set_text(w->value, "--:--");
             break;
         }
     }
-
-    if (d->kind == WIDGET_GRAPH) {
-        double span = d->max - d->min;
-        for (int i = 0; i < GRAPH_POINTS; i++) {
-            double v = number + span * 0.15 * sin(i * 0.4);
-            widget_set_number(w, v);
-        }
-    } else if (text && (d->kind == WIDGET_TEXT || d->kind == WIDGET_ICON)) {
-        widget_set_text(w, text);
-    } else if (d->kind == WIDGET_ICON) {
-        widget_set_text(w, "printing");
-    } else {
-        widget_set_number(w, number);
-    }
 }
 
-void widgets_fill_placeholders(screen_view_t *view)
+void widget_set_stale(widget_view_t *w, bool stale)
 {
-    for (int i = 0; i < view->count; i++) {
-        fill_one(&view->widgets[i]);
+    if (w->stale == stale || w->def->kind == WIDGET_CLOCK) {
+        return;
+    }
+    w->stale = stale;
+    lv_opa_t opa = stale ? LV_OPA_40 : LV_OPA_COVER;
+    if (w->value) {
+        lv_obj_set_style_text_opa(w->value, opa, 0);
+    }
+    switch (w->def->kind) {
+    case WIDGET_PROGRESS:
+        lv_obj_set_style_bg_opa(w->shape, opa, LV_PART_INDICATOR);
+        break;
+    case WIDGET_GAUGE:
+        lv_obj_set_style_arc_opa(w->shape, opa, LV_PART_INDICATOR);
+        break;
+    case WIDGET_GRAPH:
+        lv_obj_set_style_line_opa(w->shape, opa, LV_PART_ITEMS);
+        break;
+    default:
+        break;
     }
 }
 

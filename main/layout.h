@@ -10,6 +10,7 @@
 #define LAYOUT_MAX_SOURCES 16
 #define LAYOUT_MAX_SCREENS 8
 #define LAYOUT_MAX_WIDGETS (LAYOUT_COLS * LAYOUT_ROWS)
+#define LAYOUT_MAX_SERIES  1 /* lines in one graph */
 
 typedef enum {
     SOURCE_HTTP_JSON,
@@ -37,11 +38,14 @@ typedef struct {
     widget_kind_t kind;
     int col, row, colspan, rowspan;
     const char *source; /* NULL for clock */
-    const char *path;
+    const char *path;   /* == paths[0] */
+    const char *paths[LAYOUT_MAX_SERIES]; /* graph: one line per path; others: just path */
+    int path_count;
     const char *format; /* printf for numbers, strftime for clock; validated */
     const char *unit;
     const char *label;
     double min, max;
+    int period_s; /* graph: seconds between samples */
 } layout_widget_t;
 
 typedef struct {

@@ -172,6 +172,11 @@ static bool parse_widget(const cJSON *w, const layout_t *l, uint16_t *used,
 
     out->source = get_str(w, "source");
     out->path = get_str(w, "path");
+    out->path_count = 0;
+    if (out->path) {
+        out->paths[0] = out->path;
+        out->path_count = 1;
+    }
     if (out->kind != WIDGET_CLOCK) {
         if (!out->source || !out->path) {
             ESP_LOGW(TAG, "%s[%d]: %s needs source and path, skipped", screen, index, type);
@@ -199,6 +204,10 @@ static bool parse_widget(const cJSON *w, const layout_t *l, uint16_t *used,
     out->max = get_num(w, "max", out->kind == WIDGET_PROGRESS ? 1 : 100);
     if (out->max <= out->min) {
         out->max = out->min + 1;
+    }
+    out->period_s = get_int(w, "period", 10);
+    if (out->period_s < 1 || out->period_s > 3600) {
+        out->period_s = 10;
     }
 
     *used |= mask;

@@ -4,9 +4,9 @@ A small always-on dashboard: an ESP32-C3 driving a 3.5" ST7796 TFT (320 x 480,
 portrait) over SPI, powered over USB-C. Widgets are laid out on a 3 x 4 grid
 from a JSON layout file.
 
-Status: early. The device joins Wi-Fi, has a setup page, and fetches its
-layout from a URL. Widgets show placeholder values; live data sources are not
-there yet.
+Status: early. The device joins Wi-Fi, has a setup page, fetches its layout
+from a URL, and shows live printer data from Moonraker. The `http-json` and
+`mqtt` sources are not there yet.
 
 ## Wiring
 
@@ -68,6 +68,31 @@ device. If the URL cannot be reached, or the file is not a valid layout, the
 device keeps showing the last good one, also after a restart; the setup page
 shows the reason. Without a URL, or before the first successful fetch, a
 built-in sample layout is shown.
+
+### Printer data (Moonraker)
+
+A `moonraker` source connects to Moonraker's websocket and subscribes to the
+printer objects the widgets name:
+
+```json
+"sources": {
+  "printer": { "type": "moonraker", "host": "10.1.0.231", "port": 7125 }
+}
+```
+
+Use the port Moonraker answers on: 7125 by default, or the port of Mainsail or
+Fluidd when they proxy it. Add the device to `trusted_clients` in
+`moonraker.conf` and restart Moonraker; no API key is used.
+
+A widget's `path` is the Klipper object, a dot, and the field, for example
+`extruder.temperature`, `heater_bed.target`, `print_stats.state`,
+`print_stats.print_duration`, `virtual_sdcard.progress` or
+`heater_fan heatbreak_cooling_fan.speed`.
+
+A graph adds a point every `period` seconds (default 10) and keeps 30 points.
+
+Widgets show `--` until their first value, and are dimmed while their source
+is offline.
 
 Limits: 16 KB per layout file. HTTPS servers must have a certificate from a
 widely used authority; self-signed certificates are refused.

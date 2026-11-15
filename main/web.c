@@ -12,6 +12,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "fetch.h"
+#include "sources.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
@@ -172,6 +173,18 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddNumberToObject(o, "layout_age_s",
                             ls.last_ok_us ? (esp_timer_get_time() - ls.last_ok_us) / 1000000 : -1);
     cJSON_AddStringToObject(o, "layout_error", ls.error);
+
+    source_status_t src[LAYOUT_MAX_SOURCES];
+    int nsrc = sources_get_status(src, LAYOUT_MAX_SOURCES);
+    cJSON *arr = cJSON_AddArrayToObject(o, "sources");
+    for (int i = 0; i < nsrc; i++) {
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "name", src[i].name);
+        cJSON_AddStringToObject(e, "type", src[i].type);
+        cJSON_AddStringToObject(e, "state", src_state_name(src[i].state));
+        cJSON_AddStringToObject(e, "detail", src[i].detail);
+        cJSON_AddItemToArray(arr, e);
+    }
     cJSON_AddNumberToObject(o, "min_free_heap", heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
     memset(&s, 0, sizeof(s));
     return send_json(req, o);
