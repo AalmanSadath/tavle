@@ -37,3 +37,9 @@ void fetch_report_result(bool ok, const char *error);
 
 void fetch_get_status(layout_status_t *out);
 const char *layout_src_name(layout_src_t src);
+
+/* Downloads a PNG from an http:// url and shrinks it to fit max_w x max_h, blending
+ * transparency onto bg (0xRRGGBB). The result goes to ui_image_ready() with
+ * the same gen and slot. A newer request for a slot replaces one that has
+ * not started yet. */
+void fetch_image(unsigned gen, int slot, const char *url, int max_w, int max_h, uint32_t bg);

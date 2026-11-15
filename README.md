@@ -4,9 +4,9 @@ A small always-on dashboard: an ESP32-C3 driving a 3.5" ST7796 TFT (320 x 480,
 portrait) over SPI, powered over USB-C. Widgets are laid out on a 3 x 4 grid
 from a JSON layout file.
 
-Status: early. The device joins Wi-Fi, has a setup page, and fetches its
-layout from a URL. Widgets show placeholder values; live data sources are not
-there yet.
+Status: early. The device joins Wi-Fi, has a setup page, fetches its layout
+from a URL, and shows live printer data from Moonraker. The `http-json` and
+`mqtt` sources are not there yet.
 
 ## Wiring
 
@@ -68,6 +68,80 @@ device. If the URL cannot be reached, or the file is not a valid layout, the
 device keeps showing the last good one, also after a restart; the setup page
 shows the reason. Without a URL, or before the first successful fetch, a
 built-in sample layout is shown.
+
+### Printer data (Moonraker)
+
+A `moonraker` source connects to Moonraker's websocket and subscribes to the
+printer objects the widgets name:
+
+```json
+"sources": {
+  "printer": { "type": "moonraker", "host": "10.1.0.231", "port": 7125 }
+}
+```
+
+Use the port Moonraker answers on: 7125 by default, or the port of Mainsail or
+Fluidd when they proxy it. Add the device to `trusted_clients` in
+`moonraker.conf` and restart Moonraker; no API key is used.
+
+A widget's `path` is the Klipper object, a dot, and the field, for example
+`extruder.temperature`, `heater_bed.target`, `print_stats.state`,
+`print_stats.print_duration`, `virtual_sdcard.progress` or
+`heater_fan heatbreak_cooling_fan.speed`. Some values are computed by the
+device, the same way Mainsail shows them:
+
+| Path | Value |
+|---|---|
+| `tavle.progress` | progress through the gcode between the slicer's start and end markers (0 to 1) |
+| `tavle.slicer_remaining` | the slicer's estimate for the file minus the time printed |
+| `tavle.klipper_remaining` | the mean of the next two, Mainsail's default estimate |
+| `tavle.file_remaining` | the time printed scaled by `tavle.progress`; settles as the print goes on |
+| `tavle.filament_remaining` | the time printed scaled by filament used out of the file's total |
+| `tavle.layer` | current layer and layer count, as `12/67` |
+| `tavle.filename` | file name without folder and `.gcode`; a slicer suffix like `_PETG_1h18m` is dropped |
+| `tavle.thumbnail` | address of the file's thumbnail, for an `image` widget |
+
+The remaining times and the layer show `--` when nothing is printing. Use
+`"format": "duration"` to show seconds as `1h 23m`, or `23:05` under an hour.
+A value too wide for its cell is drawn smaller; `12/340` that still does not
+fit shows only `12`.
+
+A progress bar can show a line of text under its label, such as the file name:
+
+```json
+{ "type": "progress", "col": 0, "row": 0, "colspan": 2, "label": "Progress",
+  "source": "printer", "path": "tavle.progress", "text_path": "tavle.filename" }
+```
+
+An `image` widget shows a PNG whose `http://` address is the widget's value,
+scaled to fit the cell:
+
+```json
+{ "type": "image", "col": 2, "row": 0, "source": "printer", "path": "tavle.thumbnail" }
+```
+
+PNG pictures must be at most 1024 pixels wide and high, 8 bits per channel,
+and not interlaced. Slicer thumbnails are; a thumbnail between 100 and 1024
+pixels wide is picked. Decoding needs a free 32 KB block of memory. If there
+is none, the picture is tried again after 20 seconds.
+
+A graph can draw up to three values of one source:
+
+```json
+{ "type": "graph", "col": 0, "row": 1, "colspan": 3, "rowspan": 2,
+  "source": "printer", "paths": ["extruder.temperature", "heater_bed.temperature"],
+  "labels": ["nozzle", "bed"], "min": 0, "max": 260, "period": 10 }
+```
+
+`period` is the seconds between points; the graph keeps 30 points.
+
+Widgets show `--` until their first value, and are dimmed while their source
+is offline.
+
+### Clock
+
+The clock gets the time from `pool.ntp.org`. Set the time zone on the setup
+page as a POSIX TZ string, for example `AEST-10AEDT,M10.1.0,M4.1.0/3`.
 
 Limits: 16 KB per layout file. HTTPS servers must have a certificate from a
 widely used authority; self-signed certificates are refused.

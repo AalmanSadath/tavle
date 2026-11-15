@@ -280,8 +280,7 @@ esp_err_t net_start(net_status_cb_t cb)
     s_queue = xQueueCreate(8, sizeof(net_event_t));
     make_ap_identity();
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    /* esp_netif_init and the default event loop are set up in app_main */
     s_sta_netif = esp_netif_create_default_wifi_sta();
     s_ap_netif = esp_netif_create_default_wifi_ap();
     esp_netif_set_hostname(s_sta_netif, "tavle");

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -14,7 +15,9 @@
 #include "fetch.h"
 #include "layout.h"
 #include "mbedtls/sha256.h"
+#include "sources.h"
 #include "store.h"
+#include "timesync.h"
 #include "widgets.h"
 
 #if CONFIG_TAVLE_BENCH
@@ -32,7 +35,9 @@ extern const char layout_json_end[] asm("_binary_layout_json_end");
 
 #define TOAST_MS 10000
 
-typedef enum { MSG_NET, MSG_RELOAD, MSG_LAYOUT } msg_kind_t;
+typedef enum { MSG_NET, MSG_RELOAD, MSG_LAYOUT, MSG_VALUE, MSG_SRC_STATE, MSG_IMAGE } msg_kind_t;
+
+#define IMAGE_RETRY_US (20 * 1000000LL)
 
 typedef struct {
     msg_kind_t kind;
@@ -43,6 +48,25 @@ typedef struct {
             size_t len;
             layout_src_t src;
         } layout;
+        struct {
+            unsigned gen;
+            int index;
+            bool is_num;
+            double num;
+            char path[SRC_PATH_MAX];
+            char *text; /* malloc'd, NULL for numbers */
+        } value;
+        struct {
+            unsigned gen;
+            int index;
+            bool online;
+        } src;
+        struct {
+            unsigned gen;
+            int slot;
+            char *url;
+            png_picture_t *pic;
+        } image;
     };
 } ui_msg_t;
 
@@ -91,18 +115,32 @@ static bool apply_layout(char *json, size_t len, layout_src_t src)
         return false;
     }
 
+    /* The new layout is valid: free the old one before building, so the new
+     * screens reuse its memory instead of leaving holes that split the heap
+     * (a picture needs one 32 KB block). */
+    sources_stop();
     lvgl_port_lock(0);
+    lv_obj_t *blank = NULL;
+    if (s_dashboard_shown) {
+        blank = lv_obj_create(NULL);
+        lv_obj_set_style_bg_color(blank, lv_color_black(), 0);
+        lv_screen_load(blank);
+    }
+    widgets_destroy(s_views, s_view_count);
+    s_view_count = 0;
+    layout_free(&s_layout);
     widgets_build(s_disp, &fresh, views);
     for (int i = 0; i < fresh.screen_count; i++) {
-        widgets_fill_placeholders(&views[i]);
+        widgets_reset(&views[i]);
     }
     if (s_dashboard_shown) {
         lv_screen_load(views[0].screen);
     }
-    widgets_destroy(s_views, s_view_count);
+    if (blank) {
+        lv_obj_delete(blank);
+    }
     lvgl_port_unlock();
 
-    layout_free(&s_layout);
     s_layout = fresh;
     memcpy(s_views, views, sizeof(views));
     s_view_count = fresh.screen_count;
@@ -114,6 +152,7 @@ static bool apply_layout(char *json, size_t len, layout_src_t src)
     }
     memcpy(s_shown_hash, hash, sizeof(hash));
     s_have_hash = true;
+    sources_start(&s_layout); /* drivers copy what they need from the layout */
 
     if (src == LAYOUT_SRC_FETCHED) {
         store_save(json, len);
@@ -121,8 +160,10 @@ static bool apply_layout(char *json, size_t len, layout_src_t src)
     }
     fetch_report_shown(src, len);
     free(json);
-    ESP_LOGI(TAG, "%s layout shown (%u bytes), free heap %u", layout_src_name(src),
-             (unsigned)len, (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+    ESP_LOGI(TAG, "%s layout shown (%u bytes), free heap %u, largest block %u",
+             layout_src_name(src), (unsigned)len,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
     return true;
 }
 
@@ -318,13 +359,186 @@ static void bench(void)
         total += us;
         worst = us > worst ? us : worst;
     }
-    widgets_fill_placeholders(view);
+    widgets_reset(view);
     lvgl_port_unlock();
     ESP_LOGI(TAG, "bench all widgets changing @ %d MHz: avg %.1f ms (%.1f fps), worst %.1f ms",
              CONFIG_TAVLE_LCD_SPI_MHZ, total / 1000.0 / update_runs, 1e6 * update_runs / total,
              worst / 1000.0);
 }
 #endif
+
+/* ---- live data --------------------------------------------------------- */
+
+static bool bound_to(const widget_view_t *w, int index)
+{
+    return w->def->source && index < s_layout.source_count &&
+           strcmp(w->def->source, s_layout.sources[index].name) == 0;
+}
+
+/* Which of a widget's paths this is, or -1. */
+static int path_index(const widget_view_t *w, const char *path)
+{
+    for (int k = 0; k < w->def->path_count; k++) {
+        if (strcmp(w->def->paths[k], path) == 0) {
+            return k;
+        }
+    }
+    return -1;
+}
+
+static void request_image(widget_view_t *w, int slot)
+{
+    int mw, mh;
+    uint32_t bg;
+    widget_image_box(w, &mw, &mh, &bg);
+    w->img_retry_us = 0;
+    fetch_image(sources_generation(), slot, w->img_url, mw, mh, bg);
+}
+
+/* An image widget's value is the address of a PNG; "" or "--" means none. */
+static void show_image(widget_view_t *w, int slot, const char *url)
+{
+    bool none = !url[0] || strcmp(url, "--") == 0;
+    if (none) {
+        free(w->img_url);
+        w->img_url = NULL;
+        w->img_retry_us = 0;
+        widget_set_image(w, NULL);
+        return;
+    }
+    if (w->img_url && strcmp(w->img_url, url) == 0) {
+        return; /* shown, or on its way */
+    }
+    char *copy = strdup(url);
+    if (!copy) {
+        return;
+    }
+    free(w->img_url);
+    w->img_url = copy;
+    request_image(w, slot);
+}
+
+static void on_image(ui_msg_t *m)
+{
+    int sc = m->image.slot / LAYOUT_MAX_WIDGETS, i = m->image.slot % LAYOUT_MAX_WIDGETS;
+    widget_view_t *w = NULL;
+    if (m->image.gen == sources_generation() && sc < s_view_count && i < s_views[sc].count) {
+        w = &s_views[sc].widgets[i];
+    }
+    /* only the picture the widget still wants */
+    if (!w || w->def->kind != WIDGET_IMAGE || !w->img_url || !m->image.url ||
+        strcmp(w->img_url, m->image.url) != 0) {
+        png_picture_free(m->image.pic);
+    } else if (!m->image.pic) {
+        w->img_retry_us = esp_timer_get_time() + IMAGE_RETRY_US;
+    } else {
+        lvgl_port_lock(0);
+        widget_set_image(w, m->image.pic);
+        lvgl_port_unlock();
+    }
+    free(m->image.url);
+}
+
+static void on_value(const ui_msg_t *m)
+{
+    if (m->value.gen != sources_generation()) {
+        return; /* from a driver of an older layout */
+    }
+    int64_t now = esp_timer_get_time();
+    lvgl_port_lock(0);
+    for (int sc = 0; sc < s_view_count; sc++) {
+        for (int i = 0; i < s_views[sc].count; i++) {
+            widget_view_t *w = &s_views[sc].widgets[i];
+            int k;
+            if (!bound_to(w, m->value.index) || (k = path_index(w, m->value.path)) < 0) {
+                continue;
+            }
+            widget_set_stale(w, false);
+            if (w->def->kind == WIDGET_IMAGE) {
+                show_image(w, sc * LAYOUT_MAX_WIDGETS + i, m->value.is_num ? "" : m->value.text);
+                continue;
+            }
+            if (w->def->kind == WIDGET_PROGRESS && k == 1) {
+                char buf[24];
+                if (m->value.is_num) {
+                    snprintf(buf, sizeof(buf), "%g", m->value.num);
+                }
+                widget_set_detail(w, m->value.is_num ? buf : m->value.text);
+                continue;
+            }
+            if (!m->value.is_num) {
+                widget_set_text(w, m->value.text);
+                continue;
+            }
+            if (w->def->kind == WIDGET_GRAPH) {
+                /* sampled on the tick; the first value of each line shows at once */
+                if (!w->has_last[k]) {
+                    widget_graph_push(w, k, m->value.num);
+                    if (!w->next_sample_us) {
+                        w->next_sample_us = now + w->def->period_s * 1000000LL;
+                    }
+                }
+            } else {
+                widget_set_number(w, m->value.num);
+            }
+            w->last[k] = m->value.num;
+            w->has_last[k] = true;
+        }
+    }
+    lvgl_port_unlock();
+}
+
+static void on_source_state(const ui_msg_t *m)
+{
+    if (m->src.gen != sources_generation()) {
+        return;
+    }
+    lvgl_port_lock(0);
+    for (int sc = 0; sc < s_view_count; sc++) {
+        for (int i = 0; i < s_views[sc].count; i++) {
+            widget_view_t *w = &s_views[sc].widgets[i];
+            if (bound_to(w, m->src.index)) {
+                widget_set_stale(w, !m->src.online);
+            }
+        }
+    }
+    lvgl_port_unlock();
+}
+
+/* Once a second: clocks and graph samples. */
+static void tick(void)
+{
+    timesync_apply_tz();
+    struct tm tm_now;
+    const struct tm *now_tm = NULL;
+    if (timesync_valid()) {
+        time_t t = time(NULL);
+        localtime_r(&t, &tm_now);
+        now_tm = &tm_now;
+    }
+    int64_t now = esp_timer_get_time();
+
+    lvgl_port_lock(0);
+    for (int sc = 0; sc < s_view_count; sc++) {
+        widgets_update_clocks(&s_views[sc], now_tm);
+        for (int i = 0; i < s_views[sc].count; i++) {
+            widget_view_t *w = &s_views[sc].widgets[i];
+            if (w->def->kind == WIDGET_IMAGE && w->img_retry_us && now >= w->img_retry_us) {
+                request_image(w, sc * LAYOUT_MAX_WIDGETS + i);
+            }
+            if (w->def->kind == WIDGET_GRAPH && w->next_sample_us && !w->stale &&
+                now >= w->next_sample_us) {
+                for (int k = 0; k < w->def->path_count; k++) {
+                    if (w->has_last[k]) {
+                        widget_graph_push(w, k, w->last[k]);
+                    }
+                }
+                w->next_sample_us = now + w->def->period_s * 1000000LL;
+            }
+        }
+    }
+    lvgl_port_unlock();
+}
 
 /* ---- task -------------------------------------------------------------- */
 
@@ -340,11 +554,25 @@ static void ui_task(void *arg)
 #endif
 
     ui_msg_t msg;
+    int64_t next_tick = 0;
     for (;;) {
-        if (!xQueueReceive(s_queue, &msg, portMAX_DELAY)) {
+        int64_t now = esp_timer_get_time();
+        if (now >= next_tick) {
+            tick();
+            next_tick = now + 1000000;
+        }
+        TickType_t wait = pdMS_TO_TICKS((next_tick - now) / 1000 + 1);
+        if (!xQueueReceive(s_queue, &msg, wait)) {
             continue;
         }
-        if (msg.kind == MSG_NET) {
+        if (msg.kind == MSG_VALUE) {
+            on_value(&msg);
+            free(msg.value.text);
+        } else if (msg.kind == MSG_IMAGE) {
+            on_image(&msg);
+        } else if (msg.kind == MSG_SRC_STATE) {
+            on_source_state(&msg);
+        } else if (msg.kind == MSG_NET) {
             on_net(&msg.net);
         } else if (msg.kind == MSG_RELOAD) {
             s_have_hash = false; /* rebuild even if unchanged */
@@ -359,7 +587,7 @@ static void ui_task(void *arg)
 esp_err_t ui_start(lv_display_t *disp)
 {
     s_disp = disp;
-    s_queue = xQueueCreate(6, sizeof(ui_msg_t));
+    s_queue = xQueueCreate(12, sizeof(ui_msg_t));
     if (!s_queue) {
         return ESP_ERR_NO_MEM;
     }
@@ -386,6 +614,41 @@ void ui_set_layout(char *json, size_t len, layout_src_t src)
         free(json);
         fetch_report_result(false, "display busy, try again");
     }
+}
+
+/* Drivers must never block on the UI: a full queue drops the update, and the
+ * next one replaces it. */
+void ui_source_value(unsigned gen, int index, const char *path, bool is_num, double num,
+                     const char *text)
+{
+    ui_msg_t msg = {.kind = MSG_VALUE,
+                    .value = {.gen = gen, .index = index, .is_num = is_num, .num = num}};
+    strlcpy(msg.value.path, path, sizeof(msg.value.path));
+    if (text) {
+        msg.value.text = strndup(text, SRC_TEXT_MAX);
+        if (!msg.value.text) {
+            return;
+        }
+    }
+    if (xQueueSend(s_queue, &msg, 0) != pdTRUE) {
+        free(msg.value.text);
+    }
+}
+
+void ui_image_ready(unsigned gen, int slot, char *url, png_picture_t *pic)
+{
+    ui_msg_t msg = {.kind = MSG_IMAGE, .image = {.gen = gen, .slot = slot, .url = url, .pic = pic}};
+    if (xQueueSend(s_queue, &msg, pdMS_TO_TICKS(200)) != pdTRUE) {
+        free(url);
+        png_picture_free(pic);
+    }
+}
+
+void ui_source_state(unsigned gen, int index, bool online)
+{
+    ui_msg_t msg = {.kind = MSG_SRC_STATE, .src = {.gen = gen, .index = index, .online = online}};
+    /* state changes are rare and matter more than one value: wait briefly */
+    xQueueSend(s_queue, &msg, pdMS_TO_TICKS(50));
 }
 
 void ui_request_reload(void)

@@ -1,26 +1,105 @@
 {
   "sources": {
-    "printer": { "type": "moonraker", "host": "192.168.1.50", "port": 7125 }
+    "printer": {
+      "type": "moonraker",
+      "host": "printer.local",
+      "port": 7125
+    }
   },
   "screens": [
     {
       "name": "printer",
       "widgets": [
-        { "type": "text", "col": 0, "row": 0, "colspan": 3,
-          "source": "printer", "path": "print_stats.filename" },
-        { "type": "value", "col": 0, "row": 1, "label": "nozzle",
-          "source": "printer", "path": "extruder.temperature", "unit": "°C", "format": "%.0f" },
-        { "type": "value", "col": 1, "row": 1, "label": "bed",
-          "source": "printer", "path": "heater_bed.temperature", "unit": "°C", "format": "%.0f" },
-        { "type": "gauge", "col": 2, "row": 1, "label": "fan",
-          "source": "printer", "path": "fan.speed", "min": 0, "max": 1 },
-        { "type": "progress", "col": 0, "row": 2, "colspan": 2, "label": "progress",
-          "source": "printer", "path": "display_status.progress", "min": 0, "max": 1 },
-        { "type": "icon", "col": 2, "row": 2,
-          "source": "printer", "path": "print_stats.state" },
-        { "type": "graph", "col": 0, "row": 3, "colspan": 2, "label": "nozzle",
-          "source": "printer", "path": "extruder.temperature", "min": 0, "max": 260 },
-        { "type": "clock", "col": 2, "row": 3, "format": "%H:%M" }
+        {
+          "type": "progress",
+          "col": 0,
+          "row": 0,
+          "colspan": 2,
+          "label": "Progress",
+          "source": "printer",
+          "path": "tavle.progress",
+          "text_path": "tavle.filename"
+        },
+        {
+          "type": "image",
+          "col": 2,
+          "row": 0,
+          "source": "printer",
+          "path": "tavle.thumbnail"
+        },
+        {
+          "type": "graph",
+          "col": 0,
+          "row": 1,
+          "colspan": 3,
+          "source": "printer",
+          "paths": [
+            "extruder.temperature",
+            "heater_bed.temperature"
+          ],
+          "labels": [
+            "nozzle",
+            "bed"
+          ],
+          "min": 0,
+          "max": 260,
+          "period": 10
+        },
+        {
+          "type": "value",
+          "col": 0,
+          "row": 2,
+          "label": "Nozzle",
+          "source": "printer",
+          "path": "extruder.temperature",
+          "unit": "°C",
+          "format": "%.0f"
+        },
+        {
+          "type": "value",
+          "col": 1,
+          "row": 2,
+          "label": "Bed",
+          "source": "printer",
+          "path": "heater_bed.temperature",
+          "unit": "°C",
+          "format": "%.0f"
+        },
+        {
+          "type": "value",
+          "col": 2,
+          "row": 2,
+          "label": "Layer",
+          "source": "printer",
+          "path": "tavle.layer"
+        },
+        {
+          "type": "value",
+          "col": 0,
+          "row": 3,
+          "label": "Slicer ETA",
+          "source": "printer",
+          "path": "tavle.slicer_remaining",
+          "format": "duration"
+        },
+        {
+          "type": "value",
+          "col": 1,
+          "row": 3,
+          "label": "Klipper ETA",
+          "source": "printer",
+          "path": "tavle.klipper_remaining",
+          "format": "duration"
+        },
+        {
+          "type": "value",
+          "col": 2,
+          "row": 3,
+          "label": "Elapsed",
+          "source": "printer",
+          "path": "print_stats.print_duration",
+          "format": "duration"
+        }
       ]
     }
   ]

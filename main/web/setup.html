@@ -24,6 +24,7 @@ button:disabled{opacity:.5}
 .kv dt{color:var(--dim)}
 .kv dd{margin:0;word-break:break-all}
 .note{font-size:13px;color:var(--warn);margin-top:6px}
+.hint{font-size:13px;color:var(--dim);margin:6px 0 0}
 .msg{font-size:14px;margin-top:10px;min-height:1.4em}
 .msg.ok{color:var(--good)}.msg.err{color:var(--bad)}
 progress{width:100%;margin-top:10px}
@@ -57,6 +58,13 @@ progress{width:100%;margin-top:10px}
   <input id="url" type="url" maxlength="256" placeholder="http://printer.local/server/files/config/tavle.json">
   <label for="interval">check every (minutes)</label>
   <input id="interval" type="number" min="1" max="1440" step="1">
+</section>
+
+<section>
+  <h2>time</h2>
+  <label for="tz">time zone (POSIX TZ string)</label>
+  <input id="tz" maxlength="48" autocomplete="off" autocapitalize="off" placeholder="UTC0">
+  <p class="hint">examples: UTC0, AEST-10AEDT,M10.1.0,M4.1.0/3 (Sydney, Melbourne), CET-1CEST,M3.5.0,M10.5.0/3 (central Europe), EST5EDT,M3.2.0,M11.1.0 (US east)</p>
 </section>
 
 <section>
@@ -122,9 +130,13 @@ function showStatus(s) {
     ["layout", s.layout_source + ", " + s.layout_bytes + " bytes" +
       (s.layout_age_s >= 0 ? ", fetched " + ago(s.layout_age_s) : "")],
     ["layout error", s.layout_error || "none"],
+    ["time", s.time || "not set yet"],
     ["firmware", s.version + " in " + s.slot],
     ["free memory", Math.round(s.free_heap / 1024) + " KB"],
   ];
+  for (const src of s.sources || []) {
+    rows.push(["source " + src.name, src.type + ", " + src.state + (src.detail ? ": " + src.detail : "")]);
+  }
   const dl = $("status");
   dl.replaceChildren();
   for (const [k, v] of rows) {
@@ -143,6 +155,7 @@ async function refresh(fillForm) {
     $("ssid").value = s.ssid;
     $("url").value = s.layout_url;
     $("interval").value = s.interval;
+    $("tz").value = s.tz;
     $("wpass").placeholder = s.ssid ? "unchanged" : "";
   }
   return s;
@@ -199,6 +212,8 @@ $("save").onclick = async () => {
   const iv = Number($("interval").value);
   if (!Number.isInteger(iv) || iv < 1 || iv > 1440) { say(msg, "interval must be 1 to 1440 minutes", "err"); return; }
   body.interval = iv;
+  const tz = $("tz").value.trim();
+  if (tz) body.tz = tz;
 
   const a1 = $("apass").value, a2 = $("apass2").value;
   if ($("aclear").checked) {

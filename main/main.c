@@ -1,11 +1,14 @@
 #include "display.h"
 #include "esp_heap_caps.h"
+#include "esp_event.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "esp_ota_ops.h"
 #include "fetch.h"
 #include "net.h"
 #include "settings.h"
 #include "store.h"
+#include "timesync.h"
 #include "ui.h"
 #include "web.h"
 
@@ -53,10 +56,19 @@ void app_main(void)
     ESP_ERROR_CHECK(display_init(&id, &disp));
     log_heap("after display init");
 
+    /* The network stack must exist before the UI starts: a saved layout can
+     * start data sources, whose sockets need lwIP even before Wi-Fi joins. */
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
     store_init(); /* without it the device still runs on the built-in layout */
     ESP_ERROR_CHECK(fetch_start());
     ESP_ERROR_CHECK(ui_start(disp));
+    settings_t s;
+    settings_get(&s);
+    timesync_set_tz(s.tz);
     ESP_ERROR_CHECK(net_start(on_net_status));
+    timesync_start();
     ESP_ERROR_CHECK(web_start());
     log_heap("after wi-fi and web");
 

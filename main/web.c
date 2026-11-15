@@ -1,7 +1,9 @@
 #include "web.h"
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "cJSON.h"
 #include "esp_app_desc.h"
@@ -12,6 +14,8 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "fetch.h"
+#include "sources.h"
+#include "timesync.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
@@ -172,6 +176,28 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddNumberToObject(o, "layout_age_s",
                             ls.last_ok_us ? (esp_timer_get_time() - ls.last_ok_us) / 1000000 : -1);
     cJSON_AddStringToObject(o, "layout_error", ls.error);
+
+    cJSON_AddStringToObject(o, "tz", s.tz);
+    char now[32] = "";
+    if (timesync_valid()) {
+        time_t t = time(NULL);
+        struct tm tm;
+        localtime_r(&t, &tm); /* TZ is only changed on the UI task; a stale zone here is harmless */
+        strftime(now, sizeof(now), "%Y-%m-%d %H:%M", &tm);
+    }
+    cJSON_AddStringToObject(o, "time", now);
+
+    source_status_t src[LAYOUT_MAX_SOURCES];
+    int nsrc = sources_get_status(src, LAYOUT_MAX_SOURCES);
+    cJSON *arr = cJSON_AddArrayToObject(o, "sources");
+    for (int i = 0; i < nsrc; i++) {
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "name", src[i].name);
+        cJSON_AddStringToObject(e, "type", src[i].type);
+        cJSON_AddStringToObject(e, "state", src_state_name(src[i].state));
+        cJSON_AddStringToObject(e, "detail", src[i].detail);
+        cJSON_AddItemToArray(arr, e);
+    }
     cJSON_AddNumberToObject(o, "min_free_heap", heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
     memset(&s, 0, sizeof(s));
     return send_json(req, o);
@@ -286,6 +312,19 @@ static esp_err_t settings_post(httpd_req_t *req)
         }
     }
 
+    const char *tz = str_field(in, "tz", &present);
+    if (!err && present) {
+        bool ok = tz && tz[0] && strlen(tz) <= SETTINGS_TZ_MAX;
+        for (const char *c = tz; ok && *c; c++) {
+            ok = isalnum((unsigned char)*c) || strchr("+-,./:<>", *c);
+        }
+        if (!ok) {
+            err = "time zone must be a POSIX TZ string, for example AEST-10AEDT,M10.1.0,M4.1.0/3";
+        } else {
+            strlcpy(s.tz, tz, sizeof(s.tz));
+        }
+    }
+
     /* Changing or clearing an existing password already needed the current
      * one, because every route is behind the login when it is set. */
     const char *admin = str_field(in, "admin_password", &present);
@@ -313,6 +352,9 @@ static esp_err_t settings_post(httpd_req_t *req)
         }
         if (strcmp(before.layout_url, s.layout_url) != 0 || before.interval_min != s.interval_min) {
             fetch_settings_changed();
+        }
+        if (strcmp(before.tz, s.tz) != 0) {
+            timesync_set_tz(s.tz);
         }
     }
     memset(&s, 0, sizeof(s));

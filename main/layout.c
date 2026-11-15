@@ -22,6 +22,7 @@ static const char *const KIND_NAMES[] = {
     [WIDGET_GRAPH] = "graph",
     [WIDGET_ICON] = "icon",
     [WIDGET_CLOCK] = "clock",
+    [WIDGET_IMAGE] = "image",
 };
 
 const char *widget_kind_name(widget_kind_t kind)
@@ -172,6 +173,30 @@ static bool parse_widget(const cJSON *w, const layout_t *l, uint16_t *used,
 
     out->source = get_str(w, "source");
     out->path = get_str(w, "path");
+    out->path_count = 0;
+    const cJSON *paths = cJSON_GetObjectItemCaseSensitive(w, "paths");
+    if (out->kind == WIDGET_GRAPH && cJSON_IsArray(paths)) {
+        /* A graph may draw several values of the same source. */
+        const cJSON *p;
+        cJSON_ArrayForEach(p, paths) {
+            if (cJSON_IsString(p) && p->valuestring[0] && out->path_count < LAYOUT_MAX_SERIES) {
+                out->paths[out->path_count++] = p->valuestring;
+            }
+        }
+        out->path = out->path_count ? out->paths[0] : NULL;
+        const cJSON *labels = cJSON_GetObjectItemCaseSensitive(w, "labels");
+        for (int i = 0; i < out->path_count; i++) {
+            out->series_labels[i] = cJSON_GetStringValue(cJSON_GetArrayItem(labels, i));
+        }
+    } else if (out->path) {
+        out->paths[0] = out->path;
+        out->path_count = 1;
+        /* A progress bar may show a line of text from a second path. */
+        const char *text_path = get_str(w, "text_path");
+        if (out->kind == WIDGET_PROGRESS && text_path && text_path[0]) {
+            out->paths[out->path_count++] = text_path;
+        }
+    }
     if (out->kind != WIDGET_CLOCK) {
         if (!out->source || !out->path) {
             ESP_LOGW(TAG, "%s[%d]: %s needs source and path, skipped", screen, index, type);
@@ -188,6 +213,8 @@ static bool parse_widget(const cJSON *w, const layout_t *l, uint16_t *used,
         if (!out->format || strlen(out->format) > 16) {
             out->format = "%H:%M";
         }
+    } else if (out->format && strcmp(out->format, "duration") == 0) {
+        /* seconds shown as 1h 23m or 23:05 */
     } else if (out->format && !number_format_ok(out->format)) {
         ESP_LOGW(TAG, "%s[%d]: format '%s' rejected, using default", screen, index, out->format);
         out->format = NULL;
@@ -199,6 +226,10 @@ static bool parse_widget(const cJSON *w, const layout_t *l, uint16_t *used,
     out->max = get_num(w, "max", out->kind == WIDGET_PROGRESS ? 1 : 100);
     if (out->max <= out->min) {
         out->max = out->min + 1;
+    }
+    out->period_s = get_int(w, "period", 10);
+    if (out->period_s < 1 || out->period_s > 3600) {
+        out->period_s = 10;
     }
 
     *used |= mask;
