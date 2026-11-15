@@ -355,8 +355,8 @@ static void update_live(void)
     publish_info();
     ESP_LOGI(TAG, "screen %d of %d '%s', sources running 0x%x, free heap %u, largest block %u",
              s_visible + 1, s_layout.screen_count, s_layout.screens[s_visible].name, want,
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 }
 
 /* Shows the pending screen once every source it reads has sent data or

@@ -436,12 +436,12 @@ static void do_images(void)
         if (pic) {
             ESP_LOGI(TAG, "image %dx%d in %lld ms, free heap %u", pic->w, pic->h,
                      (esp_timer_get_time() - t0) / 1000,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         } else {
             ESP_LOGW(TAG, "image %s (%dx%d): %s, free heap %u, largest block %u", job.url,
                      job.max_w, job.max_h, err,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         }
         ui_image_ready(job.gen, job.slot, job.url, pic); /* takes url and pic */
     }

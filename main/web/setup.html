@@ -146,7 +146,8 @@ function showStatus(s) {
     ["board", s.board.name + ", " + plural(s.board.max_sources, "source") + ", " +
       plural(s.board.max_images, "image")],
     ["firmware", s.version + " in " + s.slot],
-    ["free memory", Math.round(s.free_heap / 1024) + " KB"],
+    ["free memory", Math.round(s.free_heap / 1024) + " KB" +
+      (s.psram_size ? " internal, " + (s.psram_free / 1048576).toFixed(1) + " MB PSRAM" : "")],
   ];
   for (const src of s.sources || []) {
     rows.push(["source " + src.name, src.type + ", " + src.state + (src.detail ? ": " + src.detail : "")]);

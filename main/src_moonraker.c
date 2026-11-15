@@ -65,6 +65,7 @@ typedef struct {
     SemaphoreHandle_t lock; /* held while reporting, so none leaves after stop */
     bool dead;              /* stopped: report nothing */
     TaskHandle_t waiter;    /* task in mr_stop, told when the client is gone */
+    volatile bool subscribed; /* status updates flowing; else the retry timer asks again */
     char uri[96];
     char base[80]; /* http://host:port */
     char **paths;
@@ -530,7 +531,14 @@ static void handle_message(mr_t *m, const char *json, int len)
             subscribe(m);
         } else {
             char d[64];
-            snprintf(d, sizeof(d), "klipper %s", state ? state : "not reachable");
+            const char *em = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "message"));
+            if (em) {
+                /* e.g. "Unauthorized" when the device is not in trusted_clients */
+                snprintf(d, sizeof(d), "moonraker: %s", em);
+            } else {
+                snprintf(d, sizeof(d), "klipper %s", state ? state : "not reachable");
+            }
+            ESP_LOGW(TAG, "source %d: %s", m->index, d);
             report_state(m, SRC_OFFLINE, d);
             esp_timer_stop(m->retry);
             esp_timer_start_once(m->retry, RETRY_INFO_US);
@@ -544,6 +552,8 @@ static void handle_message(mr_t *m, const char *json, int len)
             esp_timer_stop(m->retry);
             esp_timer_start_once(m->retry, RETRY_INFO_US);
         } else {
+            m->subscribed = true;
+            esp_timer_stop(m->retry);
             report_status(m, cJSON_GetObjectItemCaseSensitive(result, "status"));
             report_state(m, SRC_ONLINE, "");
             ESP_LOGI(TAG, "subscribed to %d paths", m->npaths);
@@ -554,20 +564,30 @@ static void handle_message(mr_t *m, const char *json, int len)
     } else if (method && strcmp(method, "notify_status_update") == 0) {
         report_status(m, cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(msg, "params"), 0));
     } else if (method && strcmp(method, "notify_klippy_ready") == 0) {
+        m->subscribed = false;
         send_json(m, "server.info", ID_INFO, NULL); /* subscriptions end with klippy */
+        esp_timer_stop(m->retry);
+        esp_timer_start_once(m->retry, RETRY_INFO_US);
     } else if (method && (strcmp(method, "notify_klippy_disconnected") == 0 ||
                           strcmp(method, "notify_klippy_shutdown") == 0)) {
+        m->subscribed = false;
         report_state(m, SRC_OFFLINE, "klipper not ready");
+        esp_timer_stop(m->retry);
+        esp_timer_start_once(m->retry, RETRY_INFO_US);
     }
     cJSON_Delete(msg);
 }
 
+/* Until subscribed, asks again every RETRY_INFO_US, also when a reply never
+ * came (Moonraker restarting while a request was on its way). */
 static void on_retry(void *arg)
 {
     mr_t *m = arg;
-    if (esp_websocket_client_is_connected(m->ws)) {
-        send_json(m, "server.info", ID_INFO, NULL);
+    if (m->subscribed || !esp_websocket_client_is_connected(m->ws)) {
+        return;
     }
+    send_json(m, "server.info", ID_INFO, NULL);
+    esp_timer_start_once(m->retry, RETRY_INFO_US);
 }
 
 static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *event_data)
@@ -586,8 +606,11 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *even
         cJSON_AddStringToObject(p, "version", "0.1");
         cJSON_AddStringToObject(p, "type", "other");
         cJSON_AddStringToObject(p, "url", "https://github.com/AalmanSadath/tavle");
+        m->subscribed = false;
         send_json(m, "server.connection.identify", ID_IDENTIFY, p);
         send_json(m, "server.info", ID_INFO, NULL);
+        esp_timer_stop(m->retry);
+        esp_timer_start_once(m->retry, RETRY_INFO_US);
         break;
     }
 
@@ -602,6 +625,7 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *even
         } else {
             snprintf(d, sizeof(d), "cannot reach %s", m->uri + 5);
         }
+        m->subscribed = false;
         report_state(m, SRC_OFFLINE, d);
         esp_timer_stop(m->retry);
         /* a reply lost with the connection: ask again once back */
