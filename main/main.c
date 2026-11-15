@@ -2,8 +2,10 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "fetch.h"
 #include "net.h"
 #include "settings.h"
+#include "store.h"
 #include "ui.h"
 #include "web.h"
 
@@ -20,6 +22,14 @@ static void log_heap(const char *when)
 /* A freshly uploaded image boots as pending. It is kept only once the
  * display and the setup page are up, so an update that breaks either is
  * rolled back by the bootloader on the next reset. */
+static void on_net_status(const net_status_t *status)
+{
+    ui_net_status(status);
+    if (status->state == NET_CONNECTED) {
+        fetch_network_up();
+    }
+}
+
 static void confirm_running_image(void)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
@@ -43,9 +53,11 @@ void app_main(void)
     ESP_ERROR_CHECK(display_init(&id, &disp));
     log_heap("after display init");
 
+    store_init(); /* without it the device still runs on the built-in layout */
+    ESP_ERROR_CHECK(fetch_start());
     ESP_ERROR_CHECK(ui_start(disp));
-    ESP_ERROR_CHECK(net_start(ui_net_status));
-    ESP_ERROR_CHECK(web_start(ui_request_reload));
+    ESP_ERROR_CHECK(net_start(on_net_status));
+    ESP_ERROR_CHECK(web_start());
     log_heap("after wi-fi and web");
 
     confirm_running_image();

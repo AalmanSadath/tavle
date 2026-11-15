@@ -4,9 +4,9 @@ A small always-on dashboard: an ESP32-C3 driving a 3.5" ST7796 TFT (320 x 480,
 portrait) over SPI, powered over USB-C. Widgets are laid out on a 3 x 4 grid
 from a JSON layout file.
 
-Status: early. The device joins Wi-Fi and has a setup page, and draws a
-built-in sample layout with placeholder values. Fetching layouts from a URL
-and live data sources are not there yet.
+Status: early. The device joins Wi-Fi, has a setup page, and fetches its
+layout from a URL. Widgets show placeholder values; live data sources are not
+there yet.
 
 ## Wiring
 
@@ -49,6 +49,28 @@ Without an admin password, anyone on your network can open the page, change
 settings and upload firmware. With one, the page asks for it. The page uses
 plain HTTP, so someone watching traffic on the same network could still read
 the password.
+
+## Layout
+
+The layout is a JSON file at any URL the device can reach. Set the URL and
+how often to check it on the setup page. Examples:
+
+- A file in Klipper's config folder, served by Moonraker:
+  `http://<printer>:7125/server/files/config/tavle.json`
+  (add the device to `trusted_clients` in `moonraker.conf`)
+- Any web server on your network: `http://<host>/tavle.json`
+- A raw file on a Git host:
+  `https://raw.githubusercontent.com/<user>/<repo>/main/tavle.json`
+
+The device fetches the layout at startup, every few minutes as set, and when
+you press reload layout. A layout that changed is shown and saved on the
+device. If the URL cannot be reached, or the file is not a valid layout, the
+device keeps showing the last good one, also after a restart; the setup page
+shows the reason. Without a URL, or before the first successful fetch, a
+built-in sample layout is shown.
+
+Limits: 16 KB per layout file. HTTPS servers must have a certificate from a
+widely used authority; self-signed certificates are refused.
 
 ## Firmware update
 
