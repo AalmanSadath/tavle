@@ -183,8 +183,8 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddBoolToObject(o, "keep_running_on", si.keep_running);
     cJSON_AddStringToObject(o, "keep_running_from", si.keep_from ? si.keep_from : "");
     cJSON_AddStringToObject(o, "slot", esp_ota_get_running_partition()->label);
-    cJSON_AddNumberToObject(o, "free_heap", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
-    cJSON_AddNumberToObject(o, "largest_block", heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+    cJSON_AddNumberToObject(o, "free_heap", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    cJSON_AddNumberToObject(o, "largest_block", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     layout_status_t ls;
     fetch_get_status(&ls);
     cJSON_AddStringToObject(o, "layout_source", layout_src_name(ls.source));
@@ -214,7 +214,9 @@ static esp_err_t status_get(httpd_req_t *req)
         cJSON_AddStringToObject(e, "detail", src[i].detail);
         cJSON_AddItemToArray(arr, e);
     }
-    cJSON_AddNumberToObject(o, "min_free_heap", heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
+    cJSON_AddNumberToObject(o, "min_free_heap", heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    cJSON_AddNumberToObject(o, "psram_free", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    cJSON_AddNumberToObject(o, "psram_size", heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
     memset(&s, 0, sizeof(s));
     return send_json(req, o);
 }

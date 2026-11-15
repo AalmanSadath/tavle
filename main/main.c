@@ -17,10 +17,12 @@ static const char *TAG = "tavle";
 
 static void log_heap(const char *when)
 {
-    ESP_LOGI(TAG, "heap %s: free %u, min free %u, largest DMA block %u", when,
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
-             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+    ESP_LOGI(TAG, "heap %s: internal free %u, min free %u, largest DMA block %u, PSRAM free %u of %u",
+             when, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
 }
 
 /* A freshly uploaded image boots as pending. It is kept only once the

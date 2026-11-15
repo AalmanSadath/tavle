@@ -125,7 +125,9 @@ static void start_ap(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_status.ap_active = true;
     xSemaphoreGive(s_lock);
-    ESP_LOGI(TAG, "setup hotspot %s up", s_status.ap_ssid);
+    /* Also on the console, for a board without a screen; reading it needs
+     * the USB cable, which already allows reflashing. */
+    ESP_LOGI(TAG, "setup hotspot %s up, password %s", s_status.ap_ssid, s_status.ap_pass);
 }
 
 static void stop_ap(void)

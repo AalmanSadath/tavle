@@ -24,8 +24,9 @@
 /* Push button to GND, internal pull-up. GPIO 0 is the BOOT button. */
 #define TAVLE_PIN_BUTTON    GPIO_NUM_0
 
-/* Two 40-line draw buffers in internal DMA memory: drawing overlaps sending. */
-#define TAVLE_LCD_BUF_LINES 40
+/* Two 20-line draw buffers in internal DMA memory: drawing overlaps sending.
+ * 40 lines cost 25 KB more internal RAM than four sources can spare. */
+#define TAVLE_LCD_BUF_LINES 20
 #define TAVLE_LCD_DOUBLE_BUF 1
 
 /* Options of the display module: colour order, invert, mirror. */
@@ -34,7 +35,10 @@
 #define TAVLE_LCD_MIRROR_X  1
 #define TAVLE_LCD_MIRROR_Y  0
 
-/* Limits: a starting point, to be measured and raised. */
+/* Limits, measured: with four moonraker sources and four pictures about 69 KB
+ * of internal RAM stays free; each further source costs about 9 KB (its
+ * websocket task stack is always internal), so six leave 51 KB and eight
+ * 21 KB. */
 #define TAVLE_MAX_SOURCES   4
 #define TAVLE_MAX_IMAGES    4
 #define TAVLE_KEEP_RUNNING  1

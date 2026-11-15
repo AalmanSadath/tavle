@@ -41,6 +41,9 @@ The display's IM0, IM1 and IM2 jumpers must be set for four-wire SPI (1, 1, 1).
 If the saved network cannot be reached for a minute, the device opens its
 setup network again, so Wi-Fi can be changed without a cable.
 
+A board without a screen prints the setup network's name and password on the
+USB serial console at startup (`idf.py monitor`).
+
 ## Setup page
 
 On your network the page is at `http://tavle.local/` (or the address shown at
@@ -113,7 +116,8 @@ printer objects the widgets name:
 
 Use the port Moonraker answers on: 7125 by default, or the port of Mainsail or
 Fluidd when they proxy it. Add the device to `trusted_clients` in
-`moonraker.conf` and restart Moonraker; no API key is used.
+`moonraker.conf` and restart Moonraker; no API key is used. A device that is
+not trusted shows "moonraker: Unauthorized" for the source on the setup page.
 
 A widget's `path` is the Klipper object, a dot, and the field, for example
 `extruder.temperature`, `heater_bed.target`, `print_stats.state`,
