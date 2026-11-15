@@ -392,6 +392,14 @@ static void on_value(const ui_msg_t *m)
                 continue;
             }
             widget_set_stale(w, false);
+            if (w->def->kind == WIDGET_PROGRESS && k == 1) {
+                char buf[24];
+                if (m->value.is_num) {
+                    snprintf(buf, sizeof(buf), "%g", m->value.num);
+                }
+                widget_set_detail(w, m->value.is_num ? buf : m->value.text);
+                continue;
+            }
             if (!m->value.is_num) {
                 widget_set_text(w, m->value.text);
                 continue;

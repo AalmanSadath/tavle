@@ -17,7 +17,8 @@
           "colspan": 3,
           "label": "Progress",
           "source": "printer",
-          "path": "virtual_sdcard.progress"
+          "path": "tavle.progress",
+          "text_path": "tavle.filename"
         },
         {
           "type": "graph",
@@ -58,26 +59,39 @@
           "format": "%.0f"
         },
         {
-          "type": "icon",
+          "type": "value",
           "col": 2,
           "row": 2,
+          "label": "Layer",
           "source": "printer",
-          "path": "print_stats.state"
+          "path": "tavle.layer"
         },
         {
-          "type": "text",
+          "type": "value",
           "col": 0,
           "row": 3,
-          "colspan": 2,
-          "label": "File",
+          "label": "Slicer ETA",
           "source": "printer",
-          "path": "print_stats.filename"
+          "path": "tavle.slicer_remaining",
+          "format": "duration"
         },
         {
-          "type": "clock",
+          "type": "value",
+          "col": 1,
+          "row": 3,
+          "label": "Klipper ETA",
+          "source": "printer",
+          "path": "tavle.klipper_remaining",
+          "format": "duration"
+        },
+        {
+          "type": "value",
           "col": 2,
           "row": 3,
-          "format": "%H:%M"
+          "label": "Elapsed",
+          "source": "printer",
+          "path": "print_stats.print_duration",
+          "format": "duration"
         }
       ]
     }

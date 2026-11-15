@@ -95,15 +95,21 @@ static void build_widget(lv_obj_t *grid, widget_view_t *w)
         lv_obj_set_style_pad_column(row, 2, 0);
         w->value = add_label(row, &lv_font_montserrat_28);
         if (d->unit) {
-            lv_obj_t *unit = add_label(row, &lv_font_montserrat_14);
-            lv_obj_add_style(unit, &s_caption, 0);
-            lv_label_set_text(unit, d->unit);
+            w->detail = add_label(row, &lv_font_montserrat_14); /* the unit */
+            lv_obj_add_style(w->detail, &s_caption, 0);
+            lv_label_set_text(w->detail, d->unit);
         }
         break;
     }
 
     case WIDGET_PROGRESS:
         add_caption(w, "progress");
+        if (d->path_count > 1) {
+            w->detail = add_label(w->cell, &lv_font_montserrat_14);
+            lv_obj_set_width(w->detail, lv_pct(100));
+            lv_label_set_long_mode(w->detail, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_align(w->detail, LV_TEXT_ALIGN_CENTER, 0);
+        }
         w->value = add_label(w->cell, &lv_font_montserrat_20);
         w->shape = lv_bar_create(w->cell);
         lv_obj_set_size(w->shape, lv_pct(100), 14);
@@ -178,6 +184,17 @@ static void build_widget(lv_obj_t *grid, widget_view_t *w)
     }
 }
 
+/* After layout: how wide a value may get before it is shrunk. */
+static void measure(widget_view_t *w)
+{
+    if (w->def->kind == WIDGET_VALUE) {
+        w->fit_w = lv_obj_get_content_width(w->cell);
+        if (w->detail) {
+            w->fit_w -= lv_obj_get_width(w->detail) + 2;
+        }
+    }
+}
+
 void widgets_build(lv_display_t *disp, const layout_t *layout, screen_view_t *views)
 {
     styles_init();
@@ -209,7 +226,46 @@ void widgets_build(lv_display_t *disp, const layout_t *layout, screen_view_t *vi
             v->widgets[i].def = &ls->widgets[i];
             build_widget(grid, &v->widgets[i]);
         }
+        lv_obj_update_layout(v->screen);
+        for (int i = 0; i < v->count; i++) {
+            measure(&v->widgets[i]);
+        }
     }
+}
+
+static int32_t text_width(const char *text, const lv_font_t *font)
+{
+    lv_point_t size;
+    lv_text_get_size(&size, text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return size.x;
+}
+
+/* A value too wide for its cell drops to a smaller font, and then, for
+ * "12/340" style text, to the part before the slash. */
+static void set_value_text(widget_view_t *w, const char *text)
+{
+    static const lv_font_t *const fonts[] = {&lv_font_montserrat_28, &lv_font_montserrat_20};
+    char buf[64];
+    strlcpy(buf, text, sizeof(buf));
+    const lv_font_t *font = fonts[1];
+    bool fitted = false;
+    for (int pass = 0; pass < 2 && !fitted; pass++) {
+        for (int f = 0; f < 2 && !fitted; f++) {
+            if (text_width(buf, fonts[f]) <= w->fit_w) {
+                font = fonts[f];
+                fitted = true;
+            }
+        }
+        char *slash = strchr(buf, '/');
+        if (fitted || !slash) {
+            break;
+        }
+        *slash = '\0';
+    }
+    if (lv_obj_get_style_text_font(w->value, 0) != font) {
+        lv_obj_set_style_text_font(w->value, font, 0);
+    }
+    set_label(w->value, buf);
 }
 
 static double fraction(const layout_widget_t *d, double v)
@@ -218,9 +274,26 @@ static double fraction(const layout_widget_t *d, double v)
     return f < 0 ? 0 : f > 1 ? 1 : f;
 }
 
+static void format_duration(double v, char *buf, size_t len)
+{
+    if (v < 0) {
+        v = 0;
+    }
+    long s = lround(v);
+    if (s >= 3600) {
+        snprintf(buf, len, "%ldh %02ldm", s / 3600, (s % 3600) / 60);
+    } else {
+        snprintf(buf, len, "%ld:%02ld", s / 60, s % 60);
+    }
+}
+
 static void format_number(const layout_widget_t *d, const char *def_fmt, double v, char *buf,
                           size_t len)
 {
+    if (d->format && strcmp(d->format, "duration") == 0) {
+        format_duration(v, buf, len);
+        return;
+    }
     /* d->format passed number_format_ok(): exactly one double conversion. */
     snprintf(buf, len, d->format ? d->format : def_fmt, v);
 }
@@ -233,7 +306,7 @@ void widget_set_number(widget_view_t *w, double v)
     switch (d->kind) {
     case WIDGET_VALUE:
         format_number(d, "%.1f", v, buf, sizeof(buf));
-        set_label(w->value, buf);
+        set_value_text(w, buf);
         break;
     case WIDGET_PROGRESS:
     case WIDGET_GAUGE: {
@@ -293,13 +366,22 @@ void widget_set_text(widget_view_t *w, const char *s)
         set_label(w->caption, s);
         break;
     }
-    case WIDGET_TEXT:
     case WIDGET_VALUE:
+        set_value_text(w, s);
+        break;
+    case WIDGET_TEXT:
     case WIDGET_CLOCK:
         set_label(w->value, s);
         break;
     default:
         break;
+    }
+}
+
+void widget_set_detail(widget_view_t *w, const char *s)
+{
+    if (w->def->kind == WIDGET_PROGRESS && w->detail) {
+        set_label(w->detail, s);
     }
 }
 
@@ -351,8 +433,10 @@ void widgets_reset(screen_view_t *view)
         w->next_sample_us = 0;
         switch (w->def->kind) {
         case WIDGET_TEXT:
-        case WIDGET_VALUE:
             lv_label_set_text(w->value, "--");
+            break;
+        case WIDGET_VALUE:
+            set_value_text(w, "--");
             break;
         case WIDGET_PROGRESS:
             lv_bar_set_value(w->shape, 0, LV_ANIM_OFF);
@@ -375,6 +459,9 @@ void widgets_reset(screen_view_t *view)
             lv_label_set_text(w->value, "--:--");
             break;
         }
+        if (w->detail && w->def->kind == WIDGET_PROGRESS) {
+            lv_label_set_text(w->detail, "");
+        }
     }
 }
 
@@ -391,6 +478,9 @@ void widget_set_stale(widget_view_t *w, bool stale)
     switch (w->def->kind) {
     case WIDGET_PROGRESS:
         lv_obj_set_style_bg_opa(w->shape, opa, LV_PART_INDICATOR);
+        if (w->detail) {
+            lv_obj_set_style_text_opa(w->detail, opa, 0);
+        }
         break;
     case WIDGET_GAUGE:
         lv_obj_set_style_arc_opa(w->shape, opa, LV_PART_INDICATOR);

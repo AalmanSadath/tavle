@@ -190,6 +190,11 @@ static bool parse_widget(const cJSON *w, const layout_t *l, uint16_t *used,
     } else if (out->path) {
         out->paths[0] = out->path;
         out->path_count = 1;
+        /* A progress bar may show a line of text from a second path. */
+        const char *text_path = get_str(w, "text_path");
+        if (out->kind == WIDGET_PROGRESS && text_path && text_path[0]) {
+            out->paths[out->path_count++] = text_path;
+        }
     }
     if (out->kind != WIDGET_CLOCK) {
         if (!out->source || !out->path) {
@@ -207,6 +212,8 @@ static bool parse_widget(const cJSON *w, const layout_t *l, uint16_t *used,
         if (!out->format || strlen(out->format) > 16) {
             out->format = "%H:%M";
         }
+    } else if (out->format && strcmp(out->format, "duration") == 0) {
+        /* seconds shown as 1h 23m or 23:05 */
     } else if (out->format && !number_format_ok(out->format)) {
         ESP_LOGW(TAG, "%s[%d]: format '%s' rejected, using default", screen, index, out->format);
         out->format = NULL;

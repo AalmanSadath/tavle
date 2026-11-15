@@ -87,7 +87,30 @@ Fluidd when they proxy it. Add the device to `trusted_clients` in
 A widget's `path` is the Klipper object, a dot, and the field, for example
 `extruder.temperature`, `heater_bed.target`, `print_stats.state`,
 `print_stats.print_duration`, `virtual_sdcard.progress` or
-`heater_fan heatbreak_cooling_fan.speed`.
+`heater_fan heatbreak_cooling_fan.speed`. Some values are computed by the
+device, the same way Mainsail shows them:
+
+| Path | Value |
+|---|---|
+| `tavle.progress` | progress through the gcode between the slicer's start and end markers (0 to 1) |
+| `tavle.slicer_remaining` | the slicer's estimate for the file minus the time printed |
+| `tavle.klipper_remaining` | the mean of the next two, Mainsail's default estimate |
+| `tavle.file_remaining` | the time printed scaled by `tavle.progress`; settles as the print goes on |
+| `tavle.filament_remaining` | the time printed scaled by filament used out of the file's total |
+| `tavle.layer` | current layer and layer count, as `12/67` |
+| `tavle.filename` | file name without folder and `.gcode`; a slicer suffix like `_PETG_1h18m` is dropped |
+
+The remaining times and the layer show `--` when nothing is printing. Use
+`"format": "duration"` to show seconds as `1h 23m`, or `23:05` under an hour.
+A value too wide for its cell is drawn smaller; `12/340` that still does not
+fit shows only `12`.
+
+A progress bar can show a line of text under its label, such as the file name:
+
+```json
+{ "type": "progress", "col": 0, "row": 0, "colspan": 2, "label": "Progress",
+  "source": "printer", "path": "tavle.progress", "text_path": "tavle.filename" }
+```
 
 A graph can draw up to three values of one source:
 

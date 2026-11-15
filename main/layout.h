@@ -39,7 +39,9 @@ typedef struct {
     int col, row, colspan, rowspan;
     const char *source; /* NULL for clock */
     const char *path;   /* == paths[0] */
-    const char *paths[LAYOUT_MAX_SERIES]; /* graph: one line per path; others: just path */
+    /* graph: one line per path; progress: value, then an optional text line
+     * (text_path); others: just path */
+    const char *paths[LAYOUT_MAX_SERIES];
     const char *series_labels[LAYOUT_MAX_SERIES];
     int path_count;
     const char *format; /* printf for numbers, strftime for clock; validated */
