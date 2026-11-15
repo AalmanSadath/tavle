@@ -1,11 +1,18 @@
 #include "layout.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
 
 static const char *TAG = "layout";
+static char s_error[64];
+
+const char *layout_last_error(void)
+{
+    return s_error;
+}
 
 static const char *const KIND_NAMES[] = {
     [WIDGET_TEXT] = "text",
@@ -201,9 +208,13 @@ static bool parse_widget(const cJSON *w, const layout_t *l, uint16_t *used,
 bool layout_parse(const char *json, size_t len, layout_t *out)
 {
     memset(out, 0, sizeof(*out));
+    s_error[0] = '\0';
     out->root = cJSON_ParseWithLength(json, len);
     if (!out->root) {
-        ESP_LOGE(TAG, "JSON parse error near: %.32s", cJSON_GetErrorPtr());
+        const char *at = cJSON_GetErrorPtr();
+        ESP_LOGE(TAG, "JSON parse error near: %.32s", at ? at : "");
+        snprintf(s_error, sizeof(s_error), "not valid JSON (at byte %d)",
+                 at ? (int)(at - json) : -1);
         return false;
     }
 
@@ -233,12 +244,19 @@ bool layout_parse(const char *json, size_t len, layout_t *out)
             index++;
         }
 
+        if (scr->widget_count == 0) {
+            /* An empty screen would show nothing; it does not count. */
+            ESP_LOGW(TAG, "screen '%s': no valid widgets, skipped", scr->name);
+            memset(scr, 0, sizeof(*scr));
+            continue;
+        }
         ESP_LOGI(TAG, "screen '%s': %d widgets", scr->name, scr->widget_count);
         out->screen_count++;
     }
 
     ESP_LOGI(TAG, "%d sources, %d screens", out->source_count, out->screen_count);
     if (out->screen_count == 0) {
+        snprintf(s_error, sizeof(s_error), "no usable screen");
         layout_free(out);
         return false;
     }

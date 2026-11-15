@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_heap_caps.h"
@@ -10,7 +11,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "fetch.h"
 #include "layout.h"
+#include "mbedtls/sha256.h"
+#include "store.h"
 #include "widgets.h"
 
 #if CONFIG_TAVLE_BENCH
@@ -28,11 +32,18 @@ extern const char layout_json_end[] asm("_binary_layout_json_end");
 
 #define TOAST_MS 10000
 
-typedef enum { MSG_NET, MSG_RELOAD } msg_kind_t;
+typedef enum { MSG_NET, MSG_RELOAD, MSG_LAYOUT } msg_kind_t;
 
 typedef struct {
     msg_kind_t kind;
-    net_status_t net;
+    union {
+        net_status_t net;
+        struct {
+            char *json;
+            size_t len;
+            layout_src_t src;
+        } layout;
+    };
 } ui_msg_t;
 
 static QueueHandle_t s_queue;
@@ -42,29 +53,42 @@ static screen_view_t s_views[LAYOUT_MAX_SCREENS];
 static int s_view_count;
 static lv_obj_t *s_info;      /* setup or connecting screen */
 static bool s_dashboard_shown;
+static uint8_t s_shown_hash[32];
+static bool s_have_hash;
 
 /* ---- dashboard --------------------------------------------------------- */
 
-static bool load_layout(layout_t *out)
+/* Parses json and, if it holds a usable screen, replaces the dashboard with
+ * it. The old screens are deleted only after the new ones exist, so a bad
+ * layout keeps what is on screen. A fetched layout that differs from the one
+ * shown is also saved to flash. Takes ownership of json. */
+static bool apply_layout(char *json, size_t len, layout_src_t src)
 {
-    size_t len = layout_json_end - layout_json_start;
-    while (len && layout_json_start[len - 1] == '\0') {
-        len--; /* EMBED_TXTFILES appends a terminator */
+    uint8_t hash[32];
+    mbedtls_sha256((const unsigned char *)json, len, hash, 0);
+    if (s_have_hash && memcmp(hash, s_shown_hash, sizeof(hash)) == 0) {
+        free(json);
+        if (src == LAYOUT_SRC_FETCHED) {
+            ESP_LOGI(TAG, "fetched layout unchanged");
+            fetch_report_shown(LAYOUT_SRC_FETCHED, len);
+            fetch_report_result(true, NULL);
+        }
+        return true;
     }
-    return layout_parse(layout_json_start, len, out);
-}
 
-/* Builds the dashboard from a fresh parse. The old screens are deleted only
- * after the new ones exist, so a failed reload keeps what is on screen. */
-static void rebuild_dashboard(void)
-{
     /* Static: a layout plus its views is several KB, too much for the stack. */
     static layout_t fresh;
     static screen_view_t views[LAYOUT_MAX_SCREENS];
     memset(views, 0, sizeof(views));
-    if (!load_layout(&fresh)) {
-        ESP_LOGE(TAG, "layout has no usable screen, keeping the current one");
-        return;
+    if (!layout_parse(json, len, &fresh)) {
+        free(json);
+        if (src == LAYOUT_SRC_FETCHED) {
+            char msg[80];
+            snprintf(msg, sizeof(msg), "invalid layout: %s", layout_last_error());
+            fetch_report_result(false, msg);
+        }
+        ESP_LOGE(TAG, "%s layout rejected: %s", layout_src_name(src), layout_last_error());
+        return false;
     }
 
     lvgl_port_lock(0);
@@ -83,13 +107,52 @@ static void rebuild_dashboard(void)
     memcpy(s_views, views, sizeof(views));
     s_view_count = fresh.screen_count;
     /* views point at widget definitions inside s_layout, which moved */
-    for (int s = 0; s < s_view_count; s++) {
-        for (int i = 0; i < s_views[s].count; i++) {
-            s_views[s].widgets[i].def = &s_layout.screens[s].widgets[i];
+    for (int sc = 0; sc < s_view_count; sc++) {
+        for (int i = 0; i < s_views[sc].count; i++) {
+            s_views[sc].widgets[i].def = &s_layout.screens[sc].widgets[i];
         }
     }
-    ESP_LOGI(TAG, "dashboard built, free heap %u",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+    memcpy(s_shown_hash, hash, sizeof(hash));
+    s_have_hash = true;
+
+    if (src == LAYOUT_SRC_FETCHED) {
+        store_save(json, len);
+        fetch_report_result(true, NULL);
+    }
+    fetch_report_shown(src, len);
+    free(json);
+    ESP_LOGI(TAG, "%s layout shown (%u bytes), free heap %u", layout_src_name(src),
+             (unsigned)len, (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+    return true;
+}
+
+static char *builtin_copy(size_t *len)
+{
+    size_t n = layout_json_end - layout_json_start;
+    while (n && layout_json_start[n - 1] == '\0') {
+        n--; /* EMBED_TXTFILES appends a terminator */
+    }
+    char *buf = malloc(n + 1);
+    if (buf) {
+        memcpy(buf, layout_json_start, n);
+        buf[n] = '\0';
+        *len = n;
+    }
+    return buf;
+}
+
+/* Saved layout if there is a valid one, else the one in the firmware. */
+static void show_offline_layout(void)
+{
+    size_t len;
+    char *json = store_load(&len);
+    if (json && apply_layout(json, len, LAYOUT_SRC_SAVED)) {
+        return;
+    }
+    json = builtin_copy(&len);
+    if (json) {
+        apply_layout(json, len, LAYOUT_SRC_BUILTIN);
+    }
 }
 
 /* ---- info screens ------------------------------------------------------ */
@@ -269,7 +332,7 @@ static void ui_task(void *arg)
 {
     /* LVGL renders on the stack of whoever holds the lock, so all UI work
      * happens here rather than on small event or HTTP stacks. */
-    rebuild_dashboard();
+    show_offline_layout();
 #if CONFIG_TAVLE_BENCH
     if (s_view_count) {
         bench();
@@ -284,7 +347,10 @@ static void ui_task(void *arg)
         if (msg.kind == MSG_NET) {
             on_net(&msg.net);
         } else if (msg.kind == MSG_RELOAD) {
-            rebuild_dashboard();
+            s_have_hash = false; /* rebuild even if unchanged */
+            show_offline_layout();
+        } else if (msg.kind == MSG_LAYOUT) {
+            apply_layout(msg.layout.json, msg.layout.len, msg.layout.src);
         }
         memset(&msg, 0, sizeof(msg)); /* hotspot password */
     }
@@ -311,6 +377,15 @@ void ui_net_status(const net_status_t *status)
 {
     ui_msg_t msg = {.kind = MSG_NET, .net = *status};
     xQueueSend(s_queue, &msg, pdMS_TO_TICKS(100));
+}
+
+void ui_set_layout(char *json, size_t len, layout_src_t src)
+{
+    ui_msg_t msg = {.kind = MSG_LAYOUT, .layout = {.json = json, .len = len, .src = src}};
+    if (xQueueSend(s_queue, &msg, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        free(json);
+        fetch_report_result(false, "display busy, try again");
+    }
 }
 
 void ui_request_reload(void)

@@ -20,7 +20,7 @@
 
 #define TAVLE_LCD_H_RES     320
 #define TAVLE_LCD_V_RES     480
-#define TAVLE_LCD_BUF_LINES 40
+#define TAVLE_LCD_BUF_LINES 20
 
 /* Panel options, adjusted after first look at the screen. */
 #define TAVLE_LCD_BGR       1

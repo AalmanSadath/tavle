@@ -11,6 +11,7 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "fetch.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
@@ -25,7 +26,6 @@ extern const char setup_html_end[] asm("_binary_setup_html_end");
 #define SETTINGS_BODY_MAX 1024
 #define OTA_CHUNK         4096
 
-static web_reload_cb_t s_on_reload;
 static esp_timer_handle_t s_reboot_timer;
 
 /* ---- request checks ---------------------------------------------------- */
@@ -164,6 +164,15 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddStringToObject(o, "version", esp_app_get_description()->version);
     cJSON_AddStringToObject(o, "slot", esp_ota_get_running_partition()->label);
     cJSON_AddNumberToObject(o, "free_heap", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+    cJSON_AddNumberToObject(o, "largest_block", heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+    layout_status_t ls;
+    fetch_get_status(&ls);
+    cJSON_AddStringToObject(o, "layout_source", layout_src_name(ls.source));
+    cJSON_AddNumberToObject(o, "layout_bytes", ls.bytes);
+    cJSON_AddNumberToObject(o, "layout_age_s",
+                            ls.last_ok_us ? (esp_timer_get_time() - ls.last_ok_us) / 1000000 : -1);
+    cJSON_AddStringToObject(o, "layout_error", ls.error);
+    cJSON_AddNumberToObject(o, "min_free_heap", heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
     memset(&s, 0, sizeof(s));
     return send_json(req, o);
 }
@@ -256,6 +265,7 @@ static esp_err_t settings_post(httpd_req_t *req)
         }
     }
 
+    const settings_t before = s;
     const char *url = str_field(in, "layout_url", &present);
     if (!err && present) {
         if (!url || strlen(url) > SETTINGS_URL_MAX ||
@@ -301,6 +311,9 @@ static esp_err_t settings_post(httpd_req_t *req)
         if (wifi_changed) {
             net_apply_settings();
         }
+        if (strcmp(before.layout_url, s.layout_url) != 0 || before.interval_min != s.interval_min) {
+            fetch_settings_changed();
+        }
     }
     memset(&s, 0, sizeof(s));
     return res;
@@ -311,9 +324,7 @@ static esp_err_t reload_post(httpd_req_t *req)
     if (!guard(req, NULL)) {
         return ESP_OK;
     }
-    if (s_on_reload) {
-        s_on_reload();
-    }
+    fetch_trigger();
     return send_ok(req);
 }
 
@@ -405,9 +416,8 @@ static esp_err_t not_found(httpd_req_t *req, httpd_err_code_t code)
     return ESP_FAIL;
 }
 
-esp_err_t web_start(web_reload_cb_t on_reload)
+esp_err_t web_start(void)
 {
-    s_on_reload = on_reload;
     const esp_timer_create_args_t t = {.callback = on_reboot_timer, .name = "reboot"};
     ESP_ERROR_CHECK(esp_timer_create(&t, &s_reboot_timer));
 

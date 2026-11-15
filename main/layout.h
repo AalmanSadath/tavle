@@ -63,4 +63,7 @@ typedef struct {
 bool layout_parse(const char *json, size_t len, layout_t *out);
 void layout_free(layout_t *layout);
 
+/* Why the last layout_parse returned false. */
+const char *layout_last_error(void);
+
 const char *widget_kind_name(widget_kind_t kind);
