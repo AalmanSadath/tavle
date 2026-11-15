@@ -1,0 +1,14 @@
+menu "tavle"
+
+config TAVLE_LCD_SPI_MHZ
+    int "Display SPI clock (MHz)"
+    range 1 80
+    default 40
+    help
+        SPI clock used for pixel data to the ST7796.
+
+config TAVLE_BENCH
+    bool "Run refresh-rate benchmark after first draw"
+    default y
+
+endmenu
