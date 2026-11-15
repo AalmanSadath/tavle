@@ -1,7 +1,8 @@
 # tavle
 
-A small always-on dashboard: an ESP32-C3 driving a 3.5" ST7796 TFT (320 x 480,
-portrait) over SPI, powered over USB-C. Widgets are laid out on a 3 x 4 grid
+A small always-on dashboard: an ESP32 board driving a 3.5" ST7796 TFT (320 x 480,
+portrait) over SPI, powered over USB-C. Supported boards: ESP32-C3 and
+ESP32-S3-WROOM-1 N16R8 (16 MB flash, 8 MB PSRAM). Widgets are laid out on a 3 x 4 grid
 from a JSON layout file.
 
 Status: early. The device joins Wi-Fi, has a setup page, fetches its layout
@@ -10,19 +11,19 @@ from a URL, and shows live printer data from Moonraker. The `http-json` and
 
 ## Wiring
 
-| Display pin | ESP32-C3 GPIO |
-|---|---|
-| VCC | 3V3 |
-| GND | GND |
-| SCL | 6 |
-| SDA | 7 |
-| SDA-O | 5 |
-| CS | 10 |
-| DC | 4 |
-| RST | 3 |
-| BL | 1 |
+| Display pin | ESP32-C3 GPIO | ESP32-S3 GPIO |
+|---|---|---|
+| VCC | 3V3 | 3V3 |
+| GND | GND | GND |
+| SCL | 6 | 12 |
+| SDA | 7 | 11 |
+| SDA-O | 5 | 13 |
+| CS | 10 | 10 |
+| DC | 4 | 9 |
+| RST | 3 | 14 |
+| BL | 1 | 21 |
 
-Button: GPIO 0 to GND.
+Button: GPIO 0 to GND on both boards (on the S3 this is the BOOT button).
 
 The display's IM0, IM1 and IM2 jumpers must be set for four-wire SPI (1, 1, 1).
 
@@ -148,22 +149,33 @@ widely used authority; self-signed certificates are refused.
 
 ## Firmware update
 
-Over USB with `idf.py flash`, or on the setup page: choose `build/tavle.bin`
+Over USB with `idf.py flash`, or on the setup page: choose
+`build/<board>/tavle.bin` (for example `build/c3/tavle.bin`)
 and press upload firmware. The device checks the file, restarts into it, and
 goes back to the previous firmware if the new one fails to start.
 
 ## Wi-Fi range
 
 Some small ESP32-C3 boards only work with reduced Wi-Fi transmit power, so
-it is capped at 8.5 dBm by default. If the device cannot reach your router,
+the C3 build caps it at 8.5 dBm by default. If the device cannot reach your router,
 raise `TAVLE_WIFI_TX_POWER_QDBM` in `idf.py menuconfig` (tavle menu).
 
 ## Build and flash
 
 Requires ESP-IDF v5.4.
 
+Pick the board with `-DBOARD=` and give each board its own build directory:
+
 ```sh
-idf.py set-target esp32c3
-idf.py build
-idf.py -p /dev/ttyACM0 flash monitor
+idf.py -B build/c3 -DBOARD=c3 build
+idf.py -B build/c3 -DBOARD=c3 -p /dev/ttyACM0 flash monitor
+
+idf.py -B build/s3 -DBOARD=s3 build
 ```
+
+Each board has limits that fit its memory; the setup page shows them.
+
+| | ESP32-C3 | ESP32-S3 |
+|---|---|---|
+| sources running at once | 1 | 4 |
+| image widgets | 1 | 4 |

@@ -114,6 +114,8 @@ async function api(path, opts = {}) {
   return body;
 }
 
+function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+
 function ago(sec) {
   if (sec < 90) return sec + " s ago";
   if (sec < 5400) return Math.round(sec / 60) + " min ago";
@@ -131,6 +133,8 @@ function showStatus(s) {
       (s.layout_age_s >= 0 ? ", fetched " + ago(s.layout_age_s) : "")],
     ["layout error", s.layout_error || "none"],
     ["time", s.time || "not set yet"],
+    ["board", s.board.name + ", " + plural(s.board.max_sources, "source") + ", " +
+      plural(s.board.max_images, "image")],
     ["firmware", s.version + " in " + s.slot],
     ["free memory", Math.round(s.free_heap / 1024) + " KB"],
   ];

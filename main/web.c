@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "board.h"
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
@@ -166,6 +167,11 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddNumberToObject(o, "interval", s.interval_min);
     cJSON_AddBoolToObject(o, "has_password", s.has_admin);
     cJSON_AddStringToObject(o, "version", esp_app_get_description()->version);
+    cJSON *b = cJSON_AddObjectToObject(o, "board");
+    cJSON_AddStringToObject(b, "name", board_profile.name);
+    cJSON_AddNumberToObject(b, "max_sources", board_profile.max_sources);
+    cJSON_AddNumberToObject(b, "max_images", board_profile.max_images);
+    cJSON_AddBoolToObject(b, "keep_running", board_profile.keep_running);
     cJSON_AddStringToObject(o, "slot", esp_ota_get_running_partition()->label);
     cJSON_AddNumberToObject(o, "free_heap", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
     cJSON_AddNumberToObject(o, "largest_block", heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));

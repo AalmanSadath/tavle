@@ -170,9 +170,7 @@ esp_err_t display_init(display_id_t *id_out, lv_display_t **disp_out)
         .io_handle = s_io,
         .panel_handle = s_panel,
         .buffer_size = BUF_PIXELS,
-        /* One buffer: the second one cost 12.8 KB that TLS needs more than
-         * the overlap of drawing and sending gains. */
-        .double_buffer = false,
+        .double_buffer = TAVLE_LCD_DOUBLE_BUF,
         .hres = TAVLE_LCD_H_RES,
         .vres = TAVLE_LCD_V_RES,
         .monochrome = false,
@@ -192,8 +190,10 @@ esp_err_t display_init(display_id_t *id_out, lv_display_t **disp_out)
 
     gpio_set_level(TAVLE_PIN_LCD_BL, 1);
     *disp_out = disp;
-    ESP_LOGI(TAG, "panel up at %d MHz, %dx%d, one %d-line buffer",
-             CONFIG_TAVLE_LCD_SPI_MHZ, TAVLE_LCD_H_RES, TAVLE_LCD_V_RES, TAVLE_LCD_BUF_LINES);
+    ESP_LOGI(TAG, "%s: panel up at %d MHz, %dx%d, %s %d-line buffer%s", TAVLE_BOARD_NAME,
+             CONFIG_TAVLE_LCD_SPI_MHZ, TAVLE_LCD_H_RES, TAVLE_LCD_V_RES,
+             TAVLE_LCD_DOUBLE_BUF ? "two" : "one", TAVLE_LCD_BUF_LINES,
+             TAVLE_LCD_DOUBLE_BUF ? "s" : "");
     return ESP_OK;
 }
 
