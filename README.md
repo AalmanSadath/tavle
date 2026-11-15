@@ -24,6 +24,7 @@ from a URL, and shows live printer data from Moonraker. The `http-json` and
 | BL | 1 | 21 |
 
 Button: GPIO 0 to GND on both boards (on the S3 this is the BOOT button).
+Press it for the next screen; hold it for two seconds to restart.
 
 The display's IM0, IM1 and IM2 jumpers must be set for four-wire SPI (1, 1, 1).
 
@@ -44,7 +45,8 @@ setup network again, so Wi-Fi can be changed without a cable.
 
 On your network the page is at `http://tavle.local/` (or the address shown at
 startup). It has the Wi-Fi settings, the layout URL, how often to check it,
-a layout reload button, a reboot button, and firmware upload.
+whether to keep other screens running (see Screens), a layout reload button, a
+next screen button, a reboot button, and firmware upload.
 
 Without an admin password, anyone on your network can open the page, change
 settings and upload firmware. With one, the page asks for it. The page uses
@@ -69,6 +71,34 @@ device. If the URL cannot be reached, or the file is not a valid layout, the
 device keeps showing the last good one, also after a restart; the setup page
 shows the reason. Without a URL, or before the first successful fetch, a
 built-in sample layout is shown.
+
+### Screens
+
+A layout can have several screens; the button or the next screen button on
+the setup page moves to the next one. Each board runs a limited number of
+sources at once (see Build and flash). A screen may use at most that many
+sources and image widgets; a layout with a screen over the limit is refused
+and the setup page shows why. Widgets sharing a source count once.
+
+Setting "keep other screens running":
+
+- off: only the screen on show runs its sources. Switching stops them and
+  starts the next screen's; graphs start empty. While the new screen waits for
+  its first data (at most 3 seconds) the old one stays up with a small grey
+  mark in the top-right corner. Pressing again during the wait moves on to
+  the following screen.
+- on: screens viewed recently keep running in the background as far as the
+  board's limits allow, so switching back to them is instant.
+- auto: the layout's `"keep_running": true` or `false` if it has one, else the
+  board default (off on the ESP32-C3, on on the ESP32-S3).
+
+```json
+{
+  "keep_running": false,
+  "sources": { ... },
+  "screens": [ ... ]
+}
+```
 
 ### Printer data (Moonraker)
 
@@ -173,7 +203,8 @@ idf.py -B build/c3 -DBOARD=c3 -p /dev/ttyACM0 flash monitor
 idf.py -B build/s3 -DBOARD=s3 build
 ```
 
-Each board has limits that fit its memory; the setup page shows them.
+Each board has limits that fit its memory; the setup page shows them. They
+apply per screen, see Screens.
 
 | | ESP32-C3 | ESP32-S3 |
 |---|---|---|

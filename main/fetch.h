@@ -16,7 +16,7 @@ typedef struct {
     layout_src_t source;  /* what is on screen */
     size_t bytes;         /* its size */
     int64_t last_ok_us;   /* esp_timer time of the last good fetch, 0 = never */
-    char error[80];       /* last fetch error, "" after a good fetch */
+    char error[112];      /* last fetch error, "" after a good fetch */
 } layout_status_t;
 
 esp_err_t fetch_start(void);

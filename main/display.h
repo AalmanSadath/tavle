@@ -17,3 +17,10 @@ esp_err_t display_init(display_id_t *id_out, lv_display_t **disp_out);
 
 /* Blocks until every queued pixel transfer has reached the panel. */
 void display_wait_idle(void);
+
+/* With the LVGL lock held: stop or restart drawing. While frozen the panel
+ * keeps showing the last image; unfreezing redraws the whole screen. */
+void display_freeze(bool freeze);
+
+/* Small busy mark in the top-right corner, sent straight to the panel. */
+void display_draw_mark(void);

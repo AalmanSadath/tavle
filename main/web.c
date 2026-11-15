@@ -17,6 +17,7 @@
 #include "fetch.h"
 #include "sources.h"
 #include "timesync.h"
+#include "ui.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
@@ -172,6 +173,15 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddNumberToObject(b, "max_sources", board_profile.max_sources);
     cJSON_AddNumberToObject(b, "max_images", board_profile.max_images);
     cJSON_AddBoolToObject(b, "keep_running", board_profile.keep_running);
+    ui_screen_info_t si;
+    ui_get_screen_info(&si);
+    cJSON *scr = cJSON_AddObjectToObject(o, "screen");
+    cJSON_AddStringToObject(scr, "name", si.name);
+    cJSON_AddNumberToObject(scr, "index", si.index);
+    cJSON_AddNumberToObject(scr, "count", si.count);
+    cJSON_AddStringToObject(o, "keep_running", keep_running_name(s.keep_running));
+    cJSON_AddBoolToObject(o, "keep_running_on", si.keep_running);
+    cJSON_AddStringToObject(o, "keep_running_from", si.keep_from ? si.keep_from : "");
     cJSON_AddStringToObject(o, "slot", esp_ota_get_running_partition()->label);
     cJSON_AddNumberToObject(o, "free_heap", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
     cJSON_AddNumberToObject(o, "largest_block", heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
@@ -331,6 +341,11 @@ static esp_err_t settings_post(httpd_req_t *req)
         }
     }
 
+    const char *keep = str_field(in, "keep_running", &present);
+    if (!err && present && !keep_running_from_name(keep, &s.keep_running)) {
+        err = "keep_running must be auto, on or off";
+    }
+
     /* Changing or clearing an existing password already needed the current
      * one, because every route is behind the login when it is set. */
     const char *admin = str_field(in, "admin_password", &present);
@@ -362,6 +377,9 @@ static esp_err_t settings_post(httpd_req_t *req)
         if (strcmp(before.tz, s.tz) != 0) {
             timesync_set_tz(s.tz);
         }
+        if (before.keep_running != s.keep_running) {
+            ui_settings_changed();
+        }
     }
     memset(&s, 0, sizeof(s));
     return res;
@@ -373,6 +391,15 @@ static esp_err_t reload_post(httpd_req_t *req)
         return ESP_OK;
     }
     fetch_trigger();
+    return send_ok(req);
+}
+
+static esp_err_t screen_post(httpd_req_t *req)
+{
+    if (!guard(req, NULL)) {
+        return ESP_OK;
+    }
+    ui_next_screen();
     return send_ok(req);
 }
 
@@ -487,6 +514,7 @@ esp_err_t web_start(void)
         {.uri = "/api/scan", .method = HTTP_GET, .handler = scan_get},
         {.uri = "/api/settings", .method = HTTP_POST, .handler = settings_post},
         {.uri = "/api/reload", .method = HTTP_POST, .handler = reload_post},
+        {.uri = "/api/screen", .method = HTTP_POST, .handler = screen_post},
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = reboot_post},
         {.uri = "/api/update", .method = HTTP_POST, .handler = update_post},
     };

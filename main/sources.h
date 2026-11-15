@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "cJSON.h"
 #include "layout.h"
@@ -13,6 +14,7 @@ typedef enum {
     SRC_ONLINE,
     SRC_OFFLINE,
     SRC_NOT_BUILT,
+    SRC_STOPPED,
 } src_state_t;
 
 /* A source type built into the firmware. start() copies what it needs from
@@ -31,12 +33,21 @@ typedef struct {
     char detail[64];
 } source_status_t;
 
-/* UI task: stops the running drivers and starts one per source of layout. */
-void sources_start(const layout_t *layout);
-void sources_stop(void);
+/* UI task: stops every running driver and takes layout's sources, all
+ * stopped. layout must stay valid until the next sources_load. */
+void sources_load(const layout_t *layout);
 
-/* Changes on every sources_start, so values queued by old drivers are dropped. */
-unsigned sources_generation(void);
+/* UI task: runs exactly the sources marked in want (bit i = sources[i]).
+ * Sources that stay wanted keep running untouched. */
+void sources_apply(uint16_t want);
+void sources_stop_all(void);
+
+/* True when source index has a running driver. */
+bool sources_running(int index);
+
+/* Changes whenever source index starts or stops, so values queued by an
+ * older driver of that source are dropped. */
+unsigned sources_generation(int index);
 
 /* Driver side. */
 void sources_report_number(int index, const char *path, double v);

@@ -4,10 +4,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "board.h"
 #include "esp_log.h"
 
 static const char *TAG = "layout";
-static char s_error[64];
+static char s_error[96];
 
 const char *layout_last_error(void)
 {
@@ -107,14 +108,46 @@ static bool number_format_ok(const char *fmt)
     return conversions == 1 && strlen(fmt) < 32;
 }
 
-static bool source_exists(const layout_t *l, const char *name)
+static int source_index(const layout_t *l, const char *name)
 {
     for (int i = 0; i < l->source_count; i++) {
         if (strcmp(l->sources[i].name, name) == 0) {
-            return true;
+            return i;
         }
     }
-    return false;
+    return -1;
+}
+
+static bool source_exists(const layout_t *l, const char *name)
+{
+    return source_index(l, name) >= 0;
+}
+
+/* Every screen must fit the board: its sources all run while it is shown. */
+static bool check_limits(layout_t *l)
+{
+    for (int s = 0; s < l->screen_count; s++) {
+        layout_screen_t *scr = &l->screens[s];
+        for (int i = 0; i < scr->widget_count; i++) {
+            const layout_widget_t *w = &scr->widgets[i];
+            if (w->source) {
+                scr->source_mask |= 1u << source_index(l, w->source);
+            }
+            scr->image_count += w->kind == WIDGET_IMAGE;
+        }
+        int n = __builtin_popcount(scr->source_mask);
+        if (n > board_profile.max_sources) {
+            snprintf(s_error, sizeof(s_error), "screen '%.16s' uses %d sources, this %s runs %d",
+                     scr->name, n, board_profile.name, board_profile.max_sources);
+            return false;
+        }
+        if (scr->image_count > board_profile.max_images) {
+            snprintf(s_error, sizeof(s_error), "screen '%.16s' has %d images, this %s shows %d",
+                     scr->name, scr->image_count, board_profile.name, board_profile.max_images);
+            return false;
+        }
+    }
+    return true;
 }
 
 static void parse_sources(const cJSON *sources, layout_t *l)
@@ -285,9 +318,17 @@ bool layout_parse(const char *json, size_t len, layout_t *out)
         out->screen_count++;
     }
 
+    const cJSON *keep = cJSON_GetObjectItemCaseSensitive(out->root, "keep_running");
+    out->keep_running = cJSON_IsBool(keep) ? cJSON_IsTrue(keep) : -1;
+
     ESP_LOGI(TAG, "%d sources, %d screens", out->source_count, out->screen_count);
     if (out->screen_count == 0) {
         snprintf(s_error, sizeof(s_error), "no usable screen");
+        layout_free(out);
+        return false;
+    }
+    if (!check_limits(out)) {
+        ESP_LOGE(TAG, "%s", s_error);
         layout_free(out);
         return false;
     }

@@ -209,42 +209,41 @@ static void measure(widget_view_t *w)
     }
 }
 
-void widgets_build(lv_display_t *disp, const layout_t *layout, screen_view_t *views)
+void widgets_init(lv_display_t *disp)
 {
     styles_init();
     lv_theme_t *theme = lv_theme_default_init(disp, lv_palette_main(LV_PALETTE_BLUE),
                                               lv_palette_main(LV_PALETTE_ORANGE), true,
                                               &lv_font_montserrat_14);
     lv_display_set_theme(disp, theme);
+}
 
-    for (int s = 0; s < layout->screen_count; s++) {
-        const layout_screen_t *ls = &layout->screens[s];
-        screen_view_t *v = &views[s];
+void widgets_build_screen(const layout_screen_t *ls, screen_view_t *v)
+{
+    v->screen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(v->screen, lv_color_black(), 0);
+    lv_obj_remove_flag(v->screen, LV_OBJ_FLAG_SCROLLABLE);
 
-        v->screen = lv_obj_create(NULL);
-        lv_obj_set_style_bg_color(v->screen, lv_color_black(), 0);
-        lv_obj_remove_flag(v->screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *grid = lv_obj_create(v->screen);
+    lv_obj_remove_style_all(grid);
+    lv_obj_set_size(grid, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_pad_all(grid, GAP, 0);
+    lv_obj_set_style_pad_row(grid, GAP, 0);
+    lv_obj_set_style_pad_column(grid, GAP, 0);
+    lv_obj_set_grid_dsc_array(grid, s_cols, s_rows);
+    lv_obj_set_layout(grid, LV_LAYOUT_GRID);
+    lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
 
-        lv_obj_t *grid = lv_obj_create(v->screen);
-        lv_obj_remove_style_all(grid);
-        lv_obj_set_size(grid, lv_pct(100), lv_pct(100));
-        lv_obj_set_style_pad_all(grid, GAP, 0);
-        lv_obj_set_style_pad_row(grid, GAP, 0);
-        lv_obj_set_style_pad_column(grid, GAP, 0);
-        lv_obj_set_grid_dsc_array(grid, s_cols, s_rows);
-        lv_obj_set_layout(grid, LV_LAYOUT_GRID);
-        lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
-
-        v->count = ls->widget_count;
-        for (int i = 0; i < ls->widget_count; i++) {
-            v->widgets[i].def = &ls->widgets[i];
-            build_widget(grid, &v->widgets[i]);
-        }
-        lv_obj_update_layout(v->screen);
-        for (int i = 0; i < v->count; i++) {
-            measure(&v->widgets[i]);
-        }
+    v->count = ls->widget_count;
+    for (int i = 0; i < ls->widget_count; i++) {
+        v->widgets[i].def = &ls->widgets[i];
+        build_widget(grid, &v->widgets[i]);
     }
+    lv_obj_update_layout(v->screen);
+    for (int i = 0; i < v->count; i++) {
+        measure(&v->widgets[i]);
+    }
+    widgets_reset(v);
 }
 
 static int32_t text_width(const char *text, const lv_font_t *font)

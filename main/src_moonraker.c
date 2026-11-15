@@ -11,6 +11,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_websocket_client.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 
 static const char *TAG = "moonraker";
 
@@ -59,6 +62,9 @@ typedef struct {
 
 typedef struct {
     int index;
+    SemaphoreHandle_t lock; /* held while reporting, so none leaves after stop */
+    bool dead;              /* stopped: report nothing */
+    TaskHandle_t waiter;    /* task in mr_stop, told when the client is gone */
     char uri[96];
     char base[80]; /* http://host:port */
     char **paths;
@@ -83,6 +89,35 @@ typedef struct {
     file_meta_t meta;
     last_t last[D_COUNT];
 } mr_t;
+
+/* Reports go out only while the source runs: stop() may return before the
+ * websocket task has ended. */
+static void report_number(mr_t *m, const char *path, double v)
+{
+    xSemaphoreTake(m->lock, portMAX_DELAY);
+    if (!m->dead) {
+        sources_report_number(m->index, path, v);
+    }
+    xSemaphoreGive(m->lock);
+}
+
+static void report_text(mr_t *m, const char *path, const char *text)
+{
+    xSemaphoreTake(m->lock, portMAX_DELAY);
+    if (!m->dead) {
+        sources_report_text(m->index, path, text);
+    }
+    xSemaphoreGive(m->lock);
+}
+
+static void report_state(mr_t *m, src_state_t state, const char *detail)
+{
+    xSemaphoreTake(m->lock, portMAX_DELAY);
+    if (!m->dead) {
+        sources_report_state(m->index, state, detail);
+    }
+    xSemaphoreGive(m->lock);
+}
 
 static bool is_derived(const char *path)
 {
@@ -257,9 +292,9 @@ static void emit(mr_t *m, int d, bool is_num, double num, const char *text)
     }
     *l = (last_t){.sent = true, .is_num = is_num, .num = num, .hash = h};
     if (is_num) {
-        sources_report_number(m->index, DERIVED[d], num);
+        report_number(m, DERIVED[d], num);
     } else {
-        sources_report_text(m->index, DERIVED[d], text);
+        report_text(m, DERIVED[d], text);
     }
 }
 
@@ -468,11 +503,11 @@ static void report_status(mr_t *m, const cJSON *status)
             continue;
         }
         if (cJSON_IsNumber(v)) {
-            sources_report_number(m->index, m->paths[i], v->valuedouble);
+            report_number(m, m->paths[i], v->valuedouble);
         } else if (cJSON_IsBool(v)) {
-            sources_report_number(m->index, m->paths[i], cJSON_IsTrue(v) ? 1 : 0);
+            report_number(m, m->paths[i], cJSON_IsTrue(v) ? 1 : 0);
         } else if (cJSON_IsString(v)) {
-            sources_report_text(m->index, m->paths[i], v->valuestring);
+            report_text(m, m->paths[i], v->valuestring);
         }
     }
 }
@@ -496,7 +531,7 @@ static void handle_message(mr_t *m, const char *json, int len)
         } else {
             char d[64];
             snprintf(d, sizeof(d), "klipper %s", state ? state : "not reachable");
-            sources_report_state(m->index, SRC_OFFLINE, d);
+            report_state(m, SRC_OFFLINE, d);
             esp_timer_stop(m->retry);
             esp_timer_start_once(m->retry, RETRY_INFO_US);
         }
@@ -505,12 +540,12 @@ static void handle_message(mr_t *m, const char *json, int len)
             char d[64];
             const char *em = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "message"));
             snprintf(d, sizeof(d), "subscribe failed: %s", em ? em : "error");
-            sources_report_state(m->index, SRC_OFFLINE, d);
+            report_state(m, SRC_OFFLINE, d);
             esp_timer_stop(m->retry);
             esp_timer_start_once(m->retry, RETRY_INFO_US);
         } else {
             report_status(m, cJSON_GetObjectItemCaseSensitive(result, "status"));
-            sources_report_state(m->index, SRC_ONLINE, "");
+            report_state(m, SRC_ONLINE, "");
             ESP_LOGI(TAG, "subscribed to %d paths", m->npaths);
         }
     } else if (cJSON_IsNumber(id) && id->valueint == ID_METADATA) {
@@ -522,7 +557,7 @@ static void handle_message(mr_t *m, const char *json, int len)
         send_json(m, "server.info", ID_INFO, NULL); /* subscriptions end with klippy */
     } else if (method && (strcmp(method, "notify_klippy_disconnected") == 0 ||
                           strcmp(method, "notify_klippy_shutdown") == 0)) {
-        sources_report_state(m->index, SRC_OFFLINE, "klipper not ready");
+        report_state(m, SRC_OFFLINE, "klipper not ready");
     }
     cJSON_Delete(msg);
 }
@@ -545,7 +580,7 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *even
         ESP_LOGI(TAG, "connected to %s", m->uri);
         m->backoff_ms = BACKOFF_MIN_MS;
         esp_websocket_client_set_reconnect_timeout(m->ws, m->backoff_ms);
-        sources_report_state(m->index, SRC_STARTING, "connected, waiting for klipper");
+        report_state(m, SRC_STARTING, "connected, waiting for klipper");
         cJSON *p = cJSON_CreateObject();
         cJSON_AddStringToObject(p, "client_name", "tavle");
         cJSON_AddStringToObject(p, "version", "0.1");
@@ -567,7 +602,7 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *even
         } else {
             snprintf(d, sizeof(d), "cannot reach %s", m->uri + 5);
         }
-        sources_report_state(m->index, SRC_OFFLINE, d);
+        report_state(m, SRC_OFFLINE, d);
         esp_timer_stop(m->retry);
         /* a reply lost with the connection: ask again once back */
         m->filename[0] = '\0';
@@ -636,6 +671,11 @@ static void *mr_start(int index, const cJSON *config, const char *const *paths, 
         return NULL;
     }
     m->index = index;
+    m->lock = xSemaphoreCreateMutex();
+    if (!m->lock) {
+        free(m);
+        return NULL;
+    }
     m->backoff_ms = BACKOFF_MIN_MS;
     snprintf(m->uri, sizeof(m->uri), "ws://%s:%d/websocket", host, port);
     snprintf(m->base, sizeof(m->base), "http://%s:%d", host, port);
@@ -672,7 +712,9 @@ static void *mr_start(int index, const cJSON *config, const char *const *paths, 
         .task_stack = 5120,
         .task_name = "moonraker",
         .reconnect_timeout_ms = BACKOFF_MIN_MS,
-        .network_timeout_ms = 10000,
+        /* a stopped source's client lives on until a connect in progress
+         * gives up; keep that short */
+        .network_timeout_ms = 3000,
         .ping_interval_sec = 10,
         .pingpong_timeout_sec = 30,
         .user_agent = "tavle",
@@ -691,16 +733,15 @@ static void *mr_start(int index, const cJSON *config, const char *const *paths, 
     return m;
 }
 
-static void mr_stop(void *ctx)
+static void destroy(mr_t *m)
 {
-    mr_t *m = ctx;
     /* The websocket task can arm the retry timer, so stop the timer on both
      * sides of destroying the client. */
     if (m->retry) {
         esp_timer_stop(m->retry);
     }
     if (m->ws) {
-        esp_websocket_client_destroy(m->ws); /* stops its task; no events after */
+        esp_websocket_client_destroy(m->ws); /* waits for its task to end */
     }
     if (m->retry) {
         esp_timer_stop(m->retry);
@@ -711,7 +752,46 @@ static void mr_stop(void *ctx)
     }
     free(m->paths);
     free(m->rx);
+    vSemaphoreDelete(m->lock);
     free(m);
+}
+
+static void destroy_task(void *arg)
+{
+    mr_t *m = arg;
+    TaskHandle_t waiter = m->waiter;
+    destroy(m);
+    xTaskNotifyGive(waiter);
+    vTaskDelete(NULL);
+}
+
+/* A connected client is gone in about 100 ms, but a connect in progress can
+ * take network_timeout_ms to give up, and a screen switch must not wait that
+ * long. So the client is destroyed on its own task, waited for up to
+ * STOP_WAIT_MS so its memory is back before the next source starts, and
+ * otherwise left to finish. Nothing is reported after this returns. */
+#define STOP_WAIT_MS 500
+
+static void mr_stop(void *ctx)
+{
+    mr_t *m = ctx;
+    const int index = m->index; /* m may be gone once destroy_task runs */
+    xSemaphoreTake(m->lock, portMAX_DELAY);
+    m->dead = true;
+    xSemaphoreGive(m->lock);
+    if (m->retry) {
+        esp_timer_stop(m->retry);
+    }
+    m->waiter = xTaskGetCurrentTaskHandle();
+    xTaskNotifyStateClear(NULL);
+    ulTaskNotifyValueClear(NULL, UINT32_MAX);
+    if (!m->ws || xTaskCreate(destroy_task, "mr_stop", 4096, m, 3, NULL) != pdPASS) {
+        destroy(m);
+        return;
+    }
+    if (!ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(STOP_WAIT_MS))) {
+        ESP_LOGI(TAG, "source %d: still connecting, closing in the background", index);
+    }
 }
 
 const source_driver_t src_moonraker_driver = {

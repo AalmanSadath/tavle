@@ -18,6 +18,11 @@ static const char *TAG = "display";
 
 static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_panel_handle_t s_panel;
+static lv_display_t *s_disp;
+
+#define MARK_SIZE 10
+#define MARK_GAP  4
+static uint16_t s_mark[MARK_SIZE * MARK_SIZE]; /* internal RAM, DMA capable */
 
 #define BUF_PIXELS (TAVLE_LCD_H_RES * TAVLE_LCD_BUF_LINES)
 
@@ -189,6 +194,7 @@ esp_err_t display_init(display_id_t *id_out, lv_display_t **disp_out)
     ESP_RETURN_ON_FALSE(disp, ESP_FAIL, TAG, "add disp");
 
     gpio_set_level(TAVLE_PIN_LCD_BL, 1);
+    s_disp = disp;
     *disp_out = disp;
     ESP_LOGI(TAG, "%s: panel up at %d MHz, %dx%d, %s %d-line buffer%s", TAVLE_BOARD_NAME,
              CONFIG_TAVLE_LCD_SPI_MHZ, TAVLE_LCD_H_RES, TAVLE_LCD_V_RES,
@@ -202,4 +208,25 @@ void display_wait_idle(void)
     /* A parameter write on the SPI panel IO waits for all queued colour
      * transfers to finish before it goes out. NOP (0x00) changes nothing. */
     esp_lcd_panel_io_tx_param(s_io, 0x00, NULL, 0);
+}
+
+void display_freeze(bool freeze)
+{
+    lv_timer_t *t = lv_display_get_refr_timer(s_disp);
+    if (freeze) {
+        lv_timer_pause(t);
+    } else {
+        lv_timer_resume(t);
+        lv_obj_invalidate(lv_screen_active()); /* paint over the busy mark */
+    }
+}
+
+void display_draw_mark(void)
+{
+    /* 0x8e8e93 is 0x8872 in RGB565; bytes swapped like the LVGL output */
+    for (int i = 0; i < MARK_SIZE * MARK_SIZE; i++) {
+        s_mark[i] = 0x7288;
+    }
+    int x = TAVLE_LCD_H_RES - MARK_GAP - MARK_SIZE;
+    esp_lcd_panel_draw_bitmap(s_panel, x, MARK_GAP, x + MARK_SIZE, MARK_GAP + MARK_SIZE, s_mark);
 }
