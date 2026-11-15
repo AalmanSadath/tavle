@@ -8,9 +8,10 @@
  * USB, 3, 45 and 46 are strapping pins: none of them is used. */
 #define TAVLE_BOARD_NAME    "ESP32-S3"
 
-/* Display: ST7796, 320 x 480, four-wire SPI. SCK, MOSI, MISO and CS sit on
- * the FSPI IOMUX pins (12, 11, 13, 10) so the bus can run at 80 MHz without
- * the GPIO matrix. MISO is only used for the ID read at boot. */
+/* Display wiring, for the four-wire SPI display picked with
+ * CONFIG_TAVLE_DISPLAY. SCK, MOSI, MISO and CS sit on the FSPI IOMUX pins
+ * (12, 11, 13, 10) so the bus can run at 80 MHz without the GPIO matrix.
+ * MISO is only used for the ID read at boot. */
 #define TAVLE_LCD_HOST      SPI2_HOST
 #define TAVLE_PIN_LCD_SCK   GPIO_NUM_12
 #define TAVLE_PIN_LCD_MOSI  GPIO_NUM_11
@@ -23,14 +24,11 @@
 /* Push button to GND, internal pull-up. GPIO 0 is the BOOT button. */
 #define TAVLE_PIN_BUTTON    GPIO_NUM_0
 
-#define TAVLE_LCD_H_RES     320
-#define TAVLE_LCD_V_RES     480
-
 /* Two 40-line draw buffers in internal DMA memory: drawing overlaps sending. */
 #define TAVLE_LCD_BUF_LINES 40
 #define TAVLE_LCD_DOUBLE_BUF 1
 
-/* Panel options, same panel as on the C3. */
+/* Options of the display module: colour order, invert, mirror. */
 #define TAVLE_LCD_BGR       1
 #define TAVLE_LCD_INVERT    0
 #define TAVLE_LCD_MIRROR_X  1

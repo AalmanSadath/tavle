@@ -12,15 +12,29 @@
 #define SERIES_COLORS ((const lv_color_t[]){lv_color_hex(0xff9f0a), lv_color_hex(0x0a84ff), \
                                              lv_color_hex(0x30d158)})
 
+LV_FONT_DECLARE(lv_font_montserrat_10);
+LV_FONT_DECLARE(lv_font_montserrat_12);
 LV_FONT_DECLARE(lv_font_montserrat_14);
 LV_FONT_DECLARE(lv_font_montserrat_20);
 LV_FONT_DECLARE(lv_font_montserrat_28);
+
+/* Text that does not fit its cell steps down through these, largest first.
+ * On 320 x 480 everything fits at the first size; the smaller ones are for
+ * smaller screens. */
+#define FONTS(...) ((const lv_font_t *const[]){__VA_ARGS__}), \
+                   sizeof((const lv_font_t *const[]){__VA_ARGS__}) / sizeof(lv_font_t *)
+#define VALUE_FONTS   FONTS(&lv_font_montserrat_28, &lv_font_montserrat_20, \
+                            &lv_font_montserrat_14, &lv_font_montserrat_12)
+#define SMALL_FONTS   FONTS(&lv_font_montserrat_14, &lv_font_montserrat_12, &lv_font_montserrat_10)
 
 static const int32_t s_cols[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
 static const int32_t s_rows[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
                                  LV_GRID_TEMPLATE_LAST};
 
 static void set_label(lv_obj_t *l, const char *text);
+static int32_t text_width(const char *text, const lv_font_t *font);
+static void fit_text(lv_obj_t *label, int32_t max_w, const lv_font_t *const *fonts, int n,
+                     bool slash, const char *text);
 
 static lv_style_t s_cell;
 static lv_style_t s_caption;
@@ -119,15 +133,12 @@ static void build_widget(lv_obj_t *grid, widget_view_t *w)
 
     case WIDGET_GAUGE:
         add_caption(w, d->path);
-        w->shape = lv_arc_create(w->cell);
-        lv_obj_set_size(w->shape, 72, 72);
+        w->shape = lv_arc_create(w->cell); /* sized from the cell in measure() */
         lv_arc_set_rotation(w->shape, 135);
         lv_arc_set_bg_angles(w->shape, 0, 270);
         lv_arc_set_range(w->shape, 0, 1000);
         lv_obj_remove_style(w->shape, NULL, LV_PART_KNOB);
         lv_obj_remove_flag(w->shape, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_style_arc_width(w->shape, 8, LV_PART_MAIN);
-        lv_obj_set_style_arc_width(w->shape, 8, LV_PART_INDICATOR);
         w->value = add_label(w->shape, &lv_font_montserrat_14);
         lv_obj_center(w->value);
         break;
@@ -198,14 +209,52 @@ static void build_widget(lv_obj_t *grid, widget_view_t *w)
     }
 }
 
-/* After layout: how wide a value may get before it is shrunk. */
+/* After layout: a caption wider than its cell steps down in size, and ends
+ * in "..." if even the smallest is too wide. */
+static void fit_caption(widget_view_t *w)
+{
+    if (!w->caption) {
+        return;
+    }
+    int32_t room = lv_obj_get_content_width(w->cell);
+    char text[48];
+    strlcpy(text, lv_label_get_text(w->caption), sizeof(text));
+    fit_text(w->caption, room, SMALL_FONTS, false, text);
+    if (text_width(text, lv_obj_get_style_text_font(w->caption, 0)) > room) {
+        lv_obj_set_width(w->caption, room);
+        lv_label_set_long_mode(w->caption, LV_LABEL_LONG_DOT);
+        lv_label_set_text(w->caption, text);
+    }
+}
+
+/* After layout, with captions fitted: how wide a value may get before it is
+ * shrunk, and how big a gauge ring fits its cell. */
 static void measure(widget_view_t *w)
 {
-    if (w->def->kind == WIDGET_VALUE) {
+    switch (w->def->kind) {
+    case WIDGET_VALUE:
         w->fit_w = lv_obj_get_content_width(w->cell);
         if (w->detail) {
             w->fit_w -= lv_obj_get_width(w->detail) + 2;
         }
+        break;
+    case WIDGET_CLOCK:
+        w->fit_w = lv_obj_get_content_width(w->cell);
+        break;
+    case WIDGET_GAUGE: {
+        int32_t h = lv_obj_get_content_height(w->cell) - lv_obj_get_height(w->caption) -
+                    lv_obj_get_style_pad_row(w->cell, 0);
+        int32_t side = lv_obj_get_content_width(w->cell);
+        side = (h < side ? h : side) * 85 / 100; /* 70 px in a 320 x 480 cell */
+        int32_t arc = side / 9;
+        lv_obj_set_size(w->shape, side, side);
+        lv_obj_set_style_arc_width(w->shape, arc, LV_PART_MAIN);
+        lv_obj_set_style_arc_width(w->shape, arc, LV_PART_INDICATOR);
+        w->fit_w = side - 2 * arc - 4; /* the text sits inside the ring */
+        break;
+    }
+    default:
+        break;
     }
 }
 
@@ -241,6 +290,10 @@ void widgets_build_screen(const layout_screen_t *ls, screen_view_t *v)
     }
     lv_obj_update_layout(v->screen);
     for (int i = 0; i < v->count; i++) {
+        fit_caption(&v->widgets[i]);
+    }
+    lv_obj_update_layout(v->screen); /* captions may have shrunk */
+    for (int i = 0; i < v->count; i++) {
         measure(&v->widgets[i]);
     }
     widgets_reset(v);
@@ -253,32 +306,40 @@ static int32_t text_width(const char *text, const lv_font_t *font)
     return size.x;
 }
 
-/* A value too wide for its cell drops to a smaller font, and then, for
- * "12/340" style text, to the part before the slash. */
-static void set_value_text(widget_view_t *w, const char *text)
+/* Shows text in the largest of fonts that fits max_w. If none does and
+ * slash is set, "12/340" style text drops to the part before the slash and
+ * tries again; otherwise the smallest font is used. */
+static void fit_text(lv_obj_t *label, int32_t max_w, const lv_font_t *const *fonts, int n,
+                     bool slash, const char *text)
 {
-    static const lv_font_t *const fonts[] = {&lv_font_montserrat_28, &lv_font_montserrat_20};
     char buf[64];
     strlcpy(buf, text, sizeof(buf));
-    const lv_font_t *font = fonts[1];
+    const lv_font_t *font = fonts[n - 1];
     bool fitted = false;
     for (int pass = 0; pass < 2 && !fitted; pass++) {
-        for (int f = 0; f < 2 && !fitted; f++) {
-            if (text_width(buf, fonts[f]) <= w->fit_w) {
+        for (int f = 0; f < n && !fitted; f++) {
+            if (text_width(buf, fonts[f]) <= max_w) {
                 font = fonts[f];
                 fitted = true;
             }
         }
-        char *slash = strchr(buf, '/');
-        if (fitted || !slash) {
+        char *cut = strchr(buf, '/');
+        if (fitted || !slash || !cut) {
             break;
         }
-        *slash = '\0';
+        *cut = '\0';
     }
-    if (lv_obj_get_style_text_font(w->value, 0) != font) {
-        lv_obj_set_style_text_font(w->value, font, 0);
+    if (lv_obj_get_style_text_font(label, 0) != font) {
+        lv_obj_set_style_text_font(label, font, 0);
     }
-    set_label(w->value, buf);
+    set_label(label, buf);
+}
+
+/* A value too wide for its cell drops to a smaller font, and then, for
+ * "12/340" style text, to the part before the slash. */
+static void set_value_text(widget_view_t *w, const char *text)
+{
+    fit_text(w->value, w->fit_w, VALUE_FONTS, true, text);
 }
 
 static double fraction(const layout_widget_t *d, double v)
@@ -329,7 +390,11 @@ void widget_set_number(widget_view_t *w, double v)
         } else {
             snprintf(buf, sizeof(buf), "%.0f%%", f * 100);
         }
-        set_label(w->value, buf);
+        if (d->kind == WIDGET_GAUGE) {
+            fit_text(w->value, w->fit_w, SMALL_FONTS, false, buf);
+        } else {
+            set_label(w->value, buf);
+        }
         if (d->kind == WIDGET_PROGRESS) {
             lv_bar_set_value(w->shape, (int32_t)(f * 1000), LV_ANIM_OFF);
         } else {
@@ -500,7 +565,7 @@ void widgets_update_clocks(screen_view_t *view, const struct tm *now)
         if (now && strftime(buf, sizeof(buf), w->def->format, now) == 0) {
             buf[0] = '\0';
         }
-        set_label(w->value, buf);
+        fit_text(w->value, w->fit_w, VALUE_FONTS, false, buf);
     }
 }
 
