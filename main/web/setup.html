@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tavle</title>
+<style>
+:root{--bg:#000;--card:#1c1c1e;--line:#2c2c2e;--text:#f2f2f7;--dim:#8e8e93;--accent:#0a84ff;--warn:#ff9f0a;--bad:#ff453a;--good:#30d158}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,sans-serif}
+main{max-width:520px;margin:0 auto;padding:16px}
+h1{font-size:28px;margin:8px 0 16px}
+h2{font-size:15px;color:var(--dim);font-weight:600;margin:0 0 10px;text-transform:lowercase}
+section{background:var(--card);border-radius:12px;padding:16px;margin-bottom:16px}
+label{display:block;font-size:14px;color:var(--dim);margin:10px 0 4px}
+input,select{width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);background:#000;color:var(--text);font:inherit}
+button{padding:10px 14px;border-radius:8px;border:0;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+button.alt{background:var(--line)}
+button:disabled{opacity:.5}
+.row{display:flex;gap:8px;align-items:center}
+.row>*{flex:1}
+.row>button{flex:0 0 auto}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}
+.kv dt{color:var(--dim)}
+.kv dd{margin:0;word-break:break-all}
+.note{font-size:13px;color:var(--warn);margin-top:6px}
+.msg{font-size:14px;margin-top:10px;min-height:1.4em}
+.msg.ok{color:var(--good)}.msg.err{color:var(--bad)}
+progress{width:100%;margin-top:10px}
+</style>
+</head>
+<body>
+<main>
+<h1>tavle</h1>
+
+<section>
+  <h2>status</h2>
+  <dl class="kv" id="status"></dl>
+</section>
+
+<section>
+  <h2>wi-fi</h2>
+  <label for="net">network</label>
+  <div class="row">
+    <select id="net"><option value="">scan for networks</option></select>
+    <button class="alt" id="scan" type="button">scan</button>
+  </div>
+  <label for="ssid">network name</label>
+  <input id="ssid" maxlength="32" autocomplete="off" autocapitalize="off">
+  <label for="wpass">password</label>
+  <input id="wpass" type="password" maxlength="63" autocomplete="off" placeholder="unchanged">
+</section>
+
+<section>
+  <h2>layout</h2>
+  <label for="url">layout url</label>
+  <input id="url" type="url" maxlength="256" placeholder="http://printer.local/server/files/config/tavle.json">
+  <label for="interval">check every (minutes)</label>
+  <input id="interval" type="number" min="1" max="1440" step="1">
+</section>
+
+<section>
+  <h2>admin password</h2>
+  <label for="apass">new password (optional, 8 to 64 characters)</label>
+  <input id="apass" type="password" maxlength="64" autocomplete="new-password">
+  <label for="apass2">repeat</label>
+  <input id="apass2" type="password" maxlength="64" autocomplete="new-password">
+  <label><input id="aclear" type="checkbox" style="width:auto"> remove the password</label>
+  <p class="note" id="opennote" hidden>No admin password is set. Anyone on this network can change these settings and upload firmware.</p>
+</section>
+
+<section>
+  <div class="row">
+    <button id="save" type="button">save</button>
+    <button class="alt" id="reload" type="button">reload layout</button>
+    <button class="alt" id="reboot" type="button">reboot</button>
+  </div>
+  <p class="msg" id="msg"></p>
+</section>
+
+<section>
+  <h2>firmware</h2>
+  <input id="fw" type="file" accept=".bin,application/octet-stream">
+  <div class="row" style="margin-top:10px"><button id="upload" type="button">upload firmware</button></div>
+  <progress id="fwprog" max="100" value="0" hidden></progress>
+  <p class="msg" id="fwmsg"></p>
+</section>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let current = null;
+
+function say(el, text, kind) {
+  el.textContent = text;
+  el.className = "msg" + (kind ? " " + kind : "");
+}
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({"X-Tavle": "1"}, opts.headers || {});
+  const r = await fetch(path, Object.assign({}, opts, {headers, cache: "no-store"}));
+  let body = null;
+  try { body = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((body && body.error) || ("error " + r.status));
+  return body;
+}
+
+function showStatus(s) {
+  const rows = [
+    ["state", s.state],
+    ["network", s.ssid || "none"],
+    ["address", s.ip ? s.ip + "  (tavle.local)" : "none"],
+    ["signal", s.ip ? s.rssi + " dBm" : "none"],
+    ["hotspot", s.hotspot ? "on" : "off"],
+    ["firmware", s.version + " in " + s.slot],
+    ["free memory", Math.round(s.free_heap / 1024) + " KB"],
+  ];
+  const dl = $("status");
+  dl.replaceChildren();
+  for (const [k, v] of rows) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+  $("opennote").hidden = s.has_password;
+}
+
+async function refresh(fillForm) {
+  const s = await api("/api/status");
+  current = s;
+  showStatus(s);
+  if (fillForm) {
+    $("ssid").value = s.ssid;
+    $("url").value = s.layout_url;
+    $("interval").value = s.interval;
+    $("wpass").placeholder = s.ssid ? "unchanged" : "";
+  }
+  return s;
+}
+
+$("scan").onclick = async () => {
+  const btn = $("scan");
+  btn.disabled = true; btn.textContent = "scanning";
+  try {
+    const list = await api("/api/scan");
+    const sel = $("net");
+    sel.replaceChildren();
+    const first = document.createElement("option");
+    first.value = ""; first.textContent = list.length + " networks found";
+    sel.append(first);
+    for (const n of list) {
+      const o = document.createElement("option");
+      o.value = n.ssid;
+      o.textContent = n.ssid + "  " + n.rssi + " dBm" + (n.open ? "  open" : "");
+      sel.append(o);
+    }
+  } catch (e) { say($("msg"), e.message, "err"); }
+  btn.disabled = false; btn.textContent = "scan";
+};
+
+$("net").onchange = () => {
+  if ($("net").value) { $("ssid").value = $("net").value; $("wpass").value = ""; $("wpass").placeholder = ""; $("wpass").focus(); }
+};
+
+async function waitForJoin(ssid) {
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const s = await refresh(false);
+      if (s.state === "connected" && s.ssid === ssid) {
+        say($("msg"), "joined " + ssid + ". the setup page is now at http://tavle.local or http://" + s.ip, "ok");
+        return;
+      }
+    } catch (e) { /* page may be moving networks */ }
+  }
+  say($("msg"), "still not connected to " + ssid + ". check the password.", "err");
+}
+
+$("save").onclick = async () => {
+  const msg = $("msg");
+  const body = {};
+  const ssid = $("ssid").value.trim();
+  const wpass = $("wpass").value;
+  if (ssid && current && (ssid !== current.ssid || wpass)) {
+    body.ssid = ssid;
+    body.wifi_password = wpass;
+  }
+  body.layout_url = $("url").value.trim();
+  const iv = Number($("interval").value);
+  if (!Number.isInteger(iv) || iv < 1 || iv > 1440) { say(msg, "interval must be 1 to 1440 minutes", "err"); return; }
+  body.interval = iv;
+
+  const a1 = $("apass").value, a2 = $("apass2").value;
+  if ($("aclear").checked) {
+    body.admin_password = "";
+  } else if (a1 || a2) {
+    if (a1 !== a2) { say(msg, "admin passwords do not match", "err"); return; }
+    if (a1.length < 8 || a1.length > 64) { say(msg, "admin password must be 8 to 64 characters", "err"); return; }
+    body.admin_password = a1;
+  }
+
+  $("save").disabled = true;
+  try {
+    await api("/api/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    $("apass").value = $("apass2").value = $("wpass").value = "";
+    $("aclear").checked = false;
+    if (body.ssid) {
+      say(msg, "saved. joining " + body.ssid + "...");
+      waitForJoin(body.ssid);
+    } else {
+      say(msg, "saved", "ok");
+      refresh(false);
+    }
+  } catch (e) { say(msg, e.message, "err"); }
+  $("save").disabled = false;
+};
+
+$("reload").onclick = async () => {
+  try { await api("/api/reload", {method: "POST"}); say($("msg"), "layout reloaded", "ok"); }
+  catch (e) { say($("msg"), e.message, "err"); }
+};
+
+$("reboot").onclick = async () => {
+  if (!confirm("reboot tavle?")) return;
+  try { await api("/api/reboot", {method: "POST"}); say($("msg"), "rebooting", "ok"); }
+  catch (e) { say($("msg"), e.message, "err"); }
+};
+
+$("upload").onclick = () => {
+  const file = $("fw").files[0];
+  const msg = $("fwmsg"), prog = $("fwprog");
+  if (!file) { say(msg, "choose a firmware .bin file first", "err"); return; }
+  if (!confirm("upload " + file.name + " and reboot?")) return;
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/update");
+  xhr.setRequestHeader("X-Tavle", "1");
+  xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  xhr.upload.onprogress = e => { if (e.lengthComputable) prog.value = 100 * e.loaded / e.total; };
+  xhr.onload = () => {
+    let b = null; try { b = JSON.parse(xhr.responseText); } catch (e) {}
+    if (xhr.status === 200) say(msg, "firmware accepted. rebooting, reload this page in about 20 seconds.", "ok");
+    else say(msg, (b && b.error) || ("error " + xhr.status), "err");
+    $("upload").disabled = false;
+  };
+  xhr.onerror = () => { say(msg, "upload failed", "err"); $("upload").disabled = false; };
+  prog.hidden = false; prog.value = 0; $("upload").disabled = true;
+  say(msg, "uploading...");
+  xhr.send(file);
+};
+
+refresh(true).catch(e => say($("msg"), e.message, "err"));
+setInterval(() => refresh(false).catch(() => {}), 10000);
+</script>
+</body>
+</html>

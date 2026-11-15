@@ -365,3 +365,13 @@ void widgets_bench_step(screen_view_t *view, int frame)
         }
     }
 }
+
+void widgets_destroy(screen_view_t *views, int count)
+{
+    for (int i = 0; i < count; i++) {
+        if (views[i].screen) {
+            lv_obj_delete(views[i].screen);
+        }
+        memset(&views[i], 0, sizeof(views[i]));
+    }
+}

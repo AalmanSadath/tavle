@@ -1,23 +1,13 @@
-#include <inttypes.h>
-#include <string.h>
-
 #include "display.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_lvgl_port.h"
-#include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "layout.h"
-#include "widgets.h"
+#include "esp_ota_ops.h"
+#include "net.h"
+#include "settings.h"
+#include "ui.h"
+#include "web.h"
 
 static const char *TAG = "tavle";
-
-extern const char layout_json_start[] asm("_binary_layout_json_start");
-extern const char layout_json_end[] asm("_binary_layout_json_end");
-
-static layout_t s_layout;
-static screen_view_t s_views[LAYOUT_MAX_SCREENS];
 
 static void log_heap(const char *when)
 {
@@ -27,89 +17,36 @@ static void log_heap(const char *when)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 }
 
-#if CONFIG_TAVLE_BENCH
-/* Times one LVGL refresh from first draw call until the last pixel is on
- * the panel. Caller holds the LVGL lock. */
-static int64_t timed_refresh(lv_display_t *disp)
+/* A freshly uploaded image boots as pending. It is kept only once the
+ * display and the setup page are up, so an update that breaks either is
+ * rolled back by the bootloader on the next reset. */
+static void confirm_running_image(void)
 {
-    int64_t t0 = esp_timer_get_time();
-    lv_refr_now(disp);
-    display_wait_idle();
-    return esp_timer_get_time() - t0;
-}
-
-static void bench_task(void *arg)
-{
-    lv_display_t *disp = arg;
-    screen_view_t *view = &s_views[0];
-    const int full_runs = 20, update_runs = 100;
-    int64_t total = 0, worst = 0;
-
-    lvgl_port_lock(0);
-    for (int i = 0; i < full_runs; i++) {
-        lv_obj_invalidate(view->screen);
-        int64_t us = timed_refresh(disp);
-        total += us;
-        worst = us > worst ? us : worst;
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    if (esp_ota_get_state_partition(running, &state) == ESP_OK &&
+        state == ESP_OTA_IMG_PENDING_VERIFY) {
+        esp_ota_mark_app_valid_cancel_rollback();
+        ESP_LOGI(TAG, "new firmware in %s confirmed", running->label);
     }
-    lvgl_port_unlock();
-    ESP_LOGI(TAG, "bench full screen @ %d MHz: avg %.1f ms (%.1f fps), worst %.1f ms",
-             CONFIG_TAVLE_LCD_SPI_MHZ, total / 1000.0 / full_runs,
-             1e6 * full_runs / total, worst / 1000.0);
-
-    total = 0;
-    worst = 0;
-    lvgl_port_lock(0);
-    for (int i = 0; i < update_runs; i++) {
-        widgets_bench_step(view, i);
-        int64_t us = timed_refresh(disp);
-        total += us;
-        worst = us > worst ? us : worst;
-    }
-    lvgl_port_unlock();
-    ESP_LOGI(TAG, "bench all widgets changing @ %d MHz: avg %.1f ms (%.1f fps), worst %.1f ms",
-             CONFIG_TAVLE_LCD_SPI_MHZ, total / 1000.0 / update_runs,
-             1e6 * update_runs / total, worst / 1000.0);
-
-    lvgl_port_lock(0);
-    widgets_fill_placeholders(view);
-    lvgl_port_unlock();
-    log_heap("after bench");
-    vTaskDelete(NULL);
 }
-#endif
 
 void app_main(void)
 {
     log_heap("at boot");
+    ESP_ERROR_CHECK(settings_init());
 
+    /* Display first: its DMA buffers need large free blocks, which Wi-Fi
+     * would fragment. */
     lv_display_t *disp;
     display_id_t id;
     ESP_ERROR_CHECK(display_init(&id, &disp));
     log_heap("after display init");
 
-    size_t len = layout_json_end - layout_json_start;
-    while (len && layout_json_start[len - 1] == '\0') {
-        len--; /* EMBED_TXTFILES appends a terminator */
-    }
-    if (!layout_parse(layout_json_start, len, &s_layout)) {
-        ESP_LOGE(TAG, "embedded layout has no usable screen");
-        return;
-    }
+    ESP_ERROR_CHECK(ui_start(disp));
+    ESP_ERROR_CHECK(net_start(ui_net_status));
+    ESP_ERROR_CHECK(web_start(ui_request_reload));
+    log_heap("after wi-fi and web");
 
-    lvgl_port_lock(0);
-    widgets_build(disp, &s_layout, s_views);
-    for (int i = 0; i < s_layout.screen_count; i++) {
-        widgets_fill_placeholders(&s_views[i]);
-    }
-    lv_screen_load(s_views[0].screen);
-    lvgl_port_unlock();
-    log_heap("after widgets");
-
-#if CONFIG_TAVLE_BENCH
-    /* Rendering runs on the calling task's stack, so the benchmark gets
-     * its own task instead of the small main task. */
-    vTaskDelay(pdMS_TO_TICKS(500));
-    xTaskCreate(bench_task, "bench", 8192, disp, 4, NULL);
-#endif
+    confirm_running_image();
 }
