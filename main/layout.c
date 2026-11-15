@@ -22,6 +22,7 @@ static const char *const KIND_NAMES[] = {
     [WIDGET_GRAPH] = "graph",
     [WIDGET_ICON] = "icon",
     [WIDGET_CLOCK] = "clock",
+    [WIDGET_IMAGE] = "image",
 };
 
 const char *widget_kind_name(widget_kind_t kind)

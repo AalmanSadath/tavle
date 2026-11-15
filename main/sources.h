@@ -6,7 +6,7 @@
 #include "layout.h"
 
 #define SRC_PATH_MAX 64
-#define SRC_TEXT_MAX 128 /* longest text value */
+#define SRC_TEXT_MAX 320 /* longest text value; a picture address is one */
 
 typedef enum {
     SRC_STARTING,

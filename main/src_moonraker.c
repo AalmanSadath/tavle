@@ -25,7 +25,8 @@ enum { ID_IDENTIFY = 1, ID_INFO = 2, ID_SUBSCRIBE = 3, ID_METADATA = 4 };
  * Mainsail does so the two agree. */
 #define DERIVED_PREFIX "tavle."
 enum {
-    D_SLICER, D_KLIPPER, D_FILE, D_FILAMENT, D_PROGRESS, D_FILENAME, D_LAYER, D_COUNT
+    D_SLICER, D_KLIPPER, D_FILE, D_FILAMENT, D_PROGRESS, D_FILENAME, D_LAYER, D_THUMB,
+    D_COUNT
 };
 static const char *const DERIVED[D_COUNT] = {
     [D_SLICER] = "tavle.slicer_remaining",
@@ -35,7 +36,10 @@ static const char *const DERIVED[D_COUNT] = {
     [D_PROGRESS] = "tavle.progress",
     [D_FILENAME] = "tavle.filename",
     [D_LAYER] = "tavle.layer",
+    [D_THUMB] = "tavle.thumbnail",
 };
+#define THUMB_MIN_W 100 /* smallest thumbnail worth showing in a cell */
+#define THUMB_MAX_W 1024 /* widest the PNG decoder takes */
 
 typedef struct {
     bool sent;
@@ -50,11 +54,13 @@ typedef struct {
     double filament_total;
     double start_byte, end_byte;
     double layer_count, first_layer_height, layer_height, object_height;
+    char thumb[160]; /* path of the chosen thumbnail, below the gcodes root */
 } file_meta_t;
 
 typedef struct {
     int index;
     char uri[96];
+    char base[80]; /* http://host:port */
     char **paths;
     int npaths;
     esp_websocket_client_handle_t ws;
@@ -183,6 +189,36 @@ static double num_or(const cJSON *obj, const char *key, double def)
     return cJSON_IsNumber(v) ? v->valuedouble : def;
 }
 
+/* The smallest thumbnail at least THUMB_MIN_W wide, else the largest; none
+ * wider than the decoder takes. */
+static void pick_thumbnail(mr_t *m, const cJSON *thumbs)
+{
+    const cJSON *best = NULL, *t;
+    double best_w = 0;
+    cJSON_ArrayForEach(t, thumbs) {
+        double w = num_or(t, "width", 0);
+        double h = num_or(t, "height", 0);
+        if (!cJSON_IsString(cJSON_GetObjectItemCaseSensitive(t, "relative_path")) || w <= 0 ||
+            w > THUMB_MAX_W || h > THUMB_MAX_W) {
+            continue;
+        }
+        bool better = !best ||
+                      (w >= THUMB_MIN_W ? best_w < THUMB_MIN_W || w < best_w : w > best_w);
+        if (better) {
+            best = t;
+            best_w = w;
+        }
+    }
+    m->meta.thumb[0] = '\0';
+    if (best) {
+        /* relative to the folder the gcode file is in */
+        const char *rel = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(best, "relative_path"));
+        const char *slash = strrchr(m->filename, '/');
+        int dir = slash ? (int)(slash - m->filename) + 1 : 0;
+        snprintf(m->meta.thumb, sizeof(m->meta.thumb), "%.*s%s", dir, m->filename, rel);
+    }
+}
+
 static void on_metadata(mr_t *m, const cJSON *r)
 {
     file_meta_t *f = &m->meta;
@@ -194,8 +230,9 @@ static void on_metadata(mr_t *m, const cJSON *r)
     f->first_layer_height = num_or(r, "first_layer_height", 0);
     f->layer_height = num_or(r, "layer_height", 0);
     f->object_height = num_or(r, "object_height", 0);
-    ESP_LOGI(TAG, "metadata for %s: slicer estimate %.0f s, %.0f layers", m->filename,
-             f->estimated_time, f->layer_count);
+    pick_thumbnail(m, cJSON_GetObjectItemCaseSensitive(r, "thumbnails"));
+    ESP_LOGI(TAG, "metadata for %s: slicer estimate %.0f s, %.0f layers, thumbnail %s",
+             m->filename, f->estimated_time, f->layer_count, f->thumb[0] ? f->thumb : "none");
 }
 
 static uint32_t hash_str(const char *s)
@@ -310,6 +347,20 @@ static void layer_text(const mr_t *m, char *buf, size_t len)
     }
 }
 
+static void url_append(char *out, size_t len, const char *s)
+{
+    size_t n = strlen(out);
+    for (; *s && n + 4 < len; s++) {
+        unsigned char c = *s;
+        if (isalnum(c) || strchr("-._~/", c)) {
+            out[n++] = c;
+        } else {
+            n += snprintf(out + n, len - n, "%%%02X", c);
+        }
+    }
+    out[n] = '\0';
+}
+
 /* "1h18m", "15m22s", "2d3h": the print time a slicer puts in file names. */
 static bool is_time_word(const char *s)
 {
@@ -384,6 +435,13 @@ static void update_derived(mr_t *m)
     } else {
         emit(m, D_LAYER, false, 0, "--");
     }
+
+    buf[0] = '\0';
+    if (m->filename[0] && m->meta.thumb[0]) {
+        snprintf(buf, sizeof(buf), "%s/server/files/gcodes/", m->base);
+        url_append(buf, sizeof(buf), m->meta.thumb);
+    }
+    emit(m, D_THUMB, false, 0, buf);
 }
 
 /* Reports every bound path present in a Moonraker status object. */
@@ -580,6 +638,7 @@ static void *mr_start(int index, const cJSON *config, const char *const *paths, 
     m->index = index;
     m->backoff_ms = BACKOFF_MIN_MS;
     snprintf(m->uri, sizeof(m->uri), "ws://%s:%d/websocket", host, port);
+    snprintf(m->base, sizeof(m->base), "http://%s:%d", host, port);
     m->current_layer = m->total_layer = -1;
     m->rx = malloc(RX_MAX);
     m->paths = calloc(npaths, sizeof(char *));

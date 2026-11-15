@@ -7,6 +7,7 @@
 #include <time.h>
 
 #define GAP          6
+#define CELL_BG      0x1c1c1e
 #define GRAPH_POINTS 30
 #define SERIES_COLORS ((const lv_color_t[]){lv_color_hex(0xff9f0a), lv_color_hex(0x0a84ff), \
                                              lv_color_hex(0x30d158)})
@@ -33,7 +34,7 @@ static void styles_init(void)
     done = true;
 
     lv_style_init(&s_cell);
-    lv_style_set_bg_color(&s_cell, lv_color_hex(0x1c1c1e));
+    lv_style_set_bg_color(&s_cell, lv_color_hex(CELL_BG));
     lv_style_set_bg_opa(&s_cell, LV_OPA_COVER);
     lv_style_set_radius(&s_cell, 8);
     lv_style_set_border_width(&s_cell, 0);
@@ -180,6 +181,19 @@ static void build_widget(lv_obj_t *grid, widget_view_t *w)
             add_caption(w, "");
         }
         w->value = add_label(w->cell, &lv_font_montserrat_28);
+        break;
+
+    case WIDGET_IMAGE:
+        if (d->label) {
+            add_caption(w, "");
+        }
+        /* holds one image per strip of the picture */
+        w->shape = lv_obj_create(w->cell);
+        lv_obj_remove_style_all(w->shape);
+        lv_obj_set_size(w->shape, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(w->shape, LV_FLEX_FLOW_COLUMN);
+        lv_obj_add_flag(w->shape, LV_OBJ_FLAG_HIDDEN);
+        w->value = add_label(w->cell, &lv_font_montserrat_20); /* "--" while there is none */
         break;
     }
 }
@@ -333,6 +347,7 @@ void widget_set_number(widget_view_t *w, double v)
         break;
     case WIDGET_ICON:
     case WIDGET_CLOCK:
+    case WIDGET_IMAGE:
         break;
     }
 }
@@ -383,6 +398,72 @@ void widget_set_detail(widget_view_t *w, const char *s)
     if (w->def->kind == WIDGET_PROGRESS && w->detail) {
         set_label(w->detail, s);
     }
+}
+
+void widget_image_box(const widget_view_t *w, int *max_w, int *max_h, uint32_t *bg)
+{
+    *max_w = lv_obj_get_content_width(w->cell);
+    *max_h = lv_obj_get_content_height(w->cell);
+    if (w->caption) {
+        *max_h -= lv_obj_get_height(w->caption) + lv_obj_get_style_pad_row(w->cell, 0);
+    }
+    *bg = CELL_BG;
+}
+
+/* A picture is shown as one image per strip, stacked without gaps. */
+struct picture {
+    png_picture_t *pic;
+    lv_image_dsc_t dsc[PNG_MAX_STRIPS];
+};
+
+static void free_image(widget_view_t *w)
+{
+    if (w->img) {
+        for (int i = 0; i < w->img->pic->strips; i++) {
+            lv_image_cache_drop(&w->img->dsc[i]);
+        }
+        png_picture_free(w->img->pic);
+        free(w->img);
+        w->img = NULL;
+    }
+}
+
+void widget_set_image(widget_view_t *w, png_picture_t *pic)
+{
+    struct picture *img = NULL;
+    if (w->def->kind != WIDGET_IMAGE || (pic && !(img = calloc(1, sizeof(*img))))) {
+        png_picture_free(pic);
+        pic = NULL;
+    }
+    lv_obj_clean(w->shape); /* the old strips */
+    if (img) {
+        img->pic = pic;
+        for (int i = 0; i < pic->strips; i++) {
+            int rows = pic->h - i * pic->strip_rows;
+            rows = rows < pic->strip_rows ? rows : pic->strip_rows;
+            lv_image_dsc_t *d = &img->dsc[i];
+            d->header.magic = LV_IMAGE_HEADER_MAGIC;
+            d->header.cf = LV_COLOR_FORMAT_RGB565;
+            d->header.w = pic->w;
+            d->header.h = rows;
+            d->header.stride = pic->w * 2;
+            d->data_size = (uint32_t)pic->w * rows * 2;
+            d->data = (const uint8_t *)pic->px[i];
+            lv_obj_t *strip = lv_image_create(w->shape);
+            lv_image_set_src(strip, d);
+            if (w->stale) {
+                lv_obj_set_style_image_opa(strip, LV_OPA_40, 0);
+            }
+        }
+        lv_obj_remove_flag(w->shape, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(w->value, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(w->shape, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(w->value, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(w->value, "--");
+    }
+    free_image(w); /* the old one, now that nothing shows it */
+    w->img = img;
 }
 
 void widget_graph_push(widget_view_t *w, int series, double v)
@@ -458,6 +539,12 @@ void widgets_reset(screen_view_t *view)
         case WIDGET_CLOCK:
             lv_label_set_text(w->value, "--:--");
             break;
+        case WIDGET_IMAGE:
+            widget_set_image(w, NULL);
+            free(w->img_url);
+            w->img_url = NULL;
+            w->img_retry_us = 0;
+            break;
         }
         if (w->detail && w->def->kind == WIDGET_PROGRESS) {
             lv_label_set_text(w->detail, "");
@@ -488,6 +575,11 @@ void widget_set_stale(widget_view_t *w, bool stale)
     case WIDGET_GRAPH:
         lv_obj_set_style_line_opa(w->shape, opa, LV_PART_ITEMS);
         break;
+    case WIDGET_IMAGE:
+        for (uint32_t i = 0; i < lv_obj_get_child_count(w->shape); i++) {
+            lv_obj_set_style_image_opa(lv_obj_get_child(w->shape, i), opa, 0);
+        }
+        break;
     default:
         break;
     }
@@ -511,6 +603,8 @@ void widgets_bench_step(screen_view_t *view, int frame)
         case WIDGET_ICON:
             widget_set_text(w, states[(frame / 10) % 4]);
             break;
+        case WIDGET_IMAGE:
+            break;
         case WIDGET_CLOCK:
             set_clock(w, (frame / 60) % 24, frame % 60);
             break;
@@ -526,6 +620,10 @@ void widgets_destroy(screen_view_t *views, int count)
     for (int i = 0; i < count; i++) {
         if (views[i].screen) {
             lv_obj_delete(views[i].screen);
+        }
+        for (int k = 0; k < views[i].count; k++) {
+            free_image(&views[i].widgets[k]);
+            free(views[i].widgets[k].img_url);
         }
         memset(&views[i], 0, sizeof(views[i]));
     }

@@ -35,7 +35,9 @@ extern const char layout_json_end[] asm("_binary_layout_json_end");
 
 #define TOAST_MS 10000
 
-typedef enum { MSG_NET, MSG_RELOAD, MSG_LAYOUT, MSG_VALUE, MSG_SRC_STATE } msg_kind_t;
+typedef enum { MSG_NET, MSG_RELOAD, MSG_LAYOUT, MSG_VALUE, MSG_SRC_STATE, MSG_IMAGE } msg_kind_t;
+
+#define IMAGE_RETRY_US (20 * 1000000LL)
 
 typedef struct {
     msg_kind_t kind;
@@ -59,6 +61,12 @@ typedef struct {
             int index;
             bool online;
         } src;
+        struct {
+            unsigned gen;
+            int slot;
+            char *url;
+            png_picture_t *pic;
+        } image;
     };
 } ui_msg_t;
 
@@ -108,7 +116,8 @@ static bool apply_layout(char *json, size_t len, layout_src_t src)
     }
 
     /* The new layout is valid: free the old one before building, so the new
-     * screens reuse its memory instead of leaving holes that split the heap. */
+     * screens reuse its memory instead of leaving holes that split the heap
+     * (a picture needs one 32 KB block). */
     sources_stop();
     lvgl_port_lock(0);
     lv_obj_t *blank = NULL;
@@ -377,6 +386,59 @@ static int path_index(const widget_view_t *w, const char *path)
     return -1;
 }
 
+static void request_image(widget_view_t *w, int slot)
+{
+    int mw, mh;
+    uint32_t bg;
+    widget_image_box(w, &mw, &mh, &bg);
+    w->img_retry_us = 0;
+    fetch_image(sources_generation(), slot, w->img_url, mw, mh, bg);
+}
+
+/* An image widget's value is the address of a PNG; "" or "--" means none. */
+static void show_image(widget_view_t *w, int slot, const char *url)
+{
+    bool none = !url[0] || strcmp(url, "--") == 0;
+    if (none) {
+        free(w->img_url);
+        w->img_url = NULL;
+        w->img_retry_us = 0;
+        widget_set_image(w, NULL);
+        return;
+    }
+    if (w->img_url && strcmp(w->img_url, url) == 0) {
+        return; /* shown, or on its way */
+    }
+    char *copy = strdup(url);
+    if (!copy) {
+        return;
+    }
+    free(w->img_url);
+    w->img_url = copy;
+    request_image(w, slot);
+}
+
+static void on_image(ui_msg_t *m)
+{
+    int sc = m->image.slot / LAYOUT_MAX_WIDGETS, i = m->image.slot % LAYOUT_MAX_WIDGETS;
+    widget_view_t *w = NULL;
+    if (m->image.gen == sources_generation() && sc < s_view_count && i < s_views[sc].count) {
+        w = &s_views[sc].widgets[i];
+    }
+    /* only the picture the widget still wants */
+    if (!w || w->def->kind != WIDGET_IMAGE || !w->img_url || !m->image.url ||
+        strcmp(w->img_url, m->image.url) != 0) {
+        png_picture_free(m->image.pic);
+    } else if (!m->image.pic) {
+        w->img_retry_us = esp_timer_get_time() + IMAGE_RETRY_US;
+    } else {
+        lvgl_port_lock(0);
+        widget_set_image(w, m->image.pic);
+        lvgl_port_unlock();
+    }
+    free(m->image.url);
+}
+
 static void on_value(const ui_msg_t *m)
 {
     if (m->value.gen != sources_generation()) {
@@ -392,6 +454,10 @@ static void on_value(const ui_msg_t *m)
                 continue;
             }
             widget_set_stale(w, false);
+            if (w->def->kind == WIDGET_IMAGE) {
+                show_image(w, sc * LAYOUT_MAX_WIDGETS + i, m->value.is_num ? "" : m->value.text);
+                continue;
+            }
             if (w->def->kind == WIDGET_PROGRESS && k == 1) {
                 char buf[24];
                 if (m->value.is_num) {
@@ -457,6 +523,9 @@ static void tick(void)
         widgets_update_clocks(&s_views[sc], now_tm);
         for (int i = 0; i < s_views[sc].count; i++) {
             widget_view_t *w = &s_views[sc].widgets[i];
+            if (w->def->kind == WIDGET_IMAGE && w->img_retry_us && now >= w->img_retry_us) {
+                request_image(w, sc * LAYOUT_MAX_WIDGETS + i);
+            }
             if (w->def->kind == WIDGET_GRAPH && w->next_sample_us && !w->stale &&
                 now >= w->next_sample_us) {
                 for (int k = 0; k < w->def->path_count; k++) {
@@ -499,6 +568,8 @@ static void ui_task(void *arg)
         if (msg.kind == MSG_VALUE) {
             on_value(&msg);
             free(msg.value.text);
+        } else if (msg.kind == MSG_IMAGE) {
+            on_image(&msg);
         } else if (msg.kind == MSG_SRC_STATE) {
             on_source_state(&msg);
         } else if (msg.kind == MSG_NET) {
@@ -561,6 +632,15 @@ void ui_source_value(unsigned gen, int index, const char *path, bool is_num, dou
     }
     if (xQueueSend(s_queue, &msg, 0) != pdTRUE) {
         free(msg.value.text);
+    }
+}
+
+void ui_image_ready(unsigned gen, int slot, char *url, png_picture_t *pic)
+{
+    ui_msg_t msg = {.kind = MSG_IMAGE, .image = {.gen = gen, .slot = slot, .url = url, .pic = pic}};
+    if (xQueueSend(s_queue, &msg, pdMS_TO_TICKS(200)) != pdTRUE) {
+        free(url);
+        png_picture_free(pic);
     }
 }
 

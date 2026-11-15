@@ -99,6 +99,7 @@ device, the same way Mainsail shows them:
 | `tavle.filament_remaining` | the time printed scaled by filament used out of the file's total |
 | `tavle.layer` | current layer and layer count, as `12/67` |
 | `tavle.filename` | file name without folder and `.gcode`; a slicer suffix like `_PETG_1h18m` is dropped |
+| `tavle.thumbnail` | address of the file's thumbnail, for an `image` widget |
 
 The remaining times and the layer show `--` when nothing is printing. Use
 `"format": "duration"` to show seconds as `1h 23m`, or `23:05` under an hour.
@@ -111,6 +112,18 @@ A progress bar can show a line of text under its label, such as the file name:
 { "type": "progress", "col": 0, "row": 0, "colspan": 2, "label": "Progress",
   "source": "printer", "path": "tavle.progress", "text_path": "tavle.filename" }
 ```
+
+An `image` widget shows a PNG whose `http://` address is the widget's value,
+scaled to fit the cell:
+
+```json
+{ "type": "image", "col": 2, "row": 0, "source": "printer", "path": "tavle.thumbnail" }
+```
+
+PNG pictures must be at most 1024 pixels wide and high, 8 bits per channel,
+and not interlaced. Slicer thumbnails are; a thumbnail between 100 and 1024
+pixels wide is picked. Decoding needs a free 32 KB block of memory. If there
+is none, the picture is tried again after 20 seconds.
 
 A graph can draw up to three values of one source:
 

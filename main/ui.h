@@ -8,6 +8,7 @@
 #include "fetch.h"
 #include "lvgl.h"
 #include "net.h"
+#include "png.h"
 
 /* Starts the UI task, which owns the layout and every screen. */
 esp_err_t ui_start(lv_display_t *disp);
@@ -24,3 +25,7 @@ void ui_set_layout(char *json, size_t len, layout_src_t src);
 void ui_source_value(unsigned gen, int index, const char *path, bool is_num, double num,
                      const char *text);
 void ui_source_state(unsigned gen, int index, bool online);
+
+/* From the fetch task: a picture asked for with fetch_image(). Takes
+ * ownership of url and pic; pic == NULL when it could not be loaded. */
+void ui_image_ready(unsigned gen, int slot, char *url, png_picture_t *pic);

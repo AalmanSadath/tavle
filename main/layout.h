@@ -32,6 +32,7 @@ typedef enum {
     WIDGET_GRAPH,
     WIDGET_ICON,
     WIDGET_CLOCK,
+    WIDGET_IMAGE,
 } widget_kind_t;
 
 typedef struct {

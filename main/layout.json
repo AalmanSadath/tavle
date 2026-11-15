@@ -14,11 +14,18 @@
           "type": "progress",
           "col": 0,
           "row": 0,
-          "colspan": 3,
+          "colspan": 2,
           "label": "Progress",
           "source": "printer",
           "path": "tavle.progress",
           "text_path": "tavle.filename"
+        },
+        {
+          "type": "image",
+          "col": 2,
+          "row": 0,
+          "source": "printer",
+          "path": "tavle.thumbnail"
         },
         {
           "type": "graph",
