@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -16,6 +17,7 @@
 #include "mbedtls/sha256.h"
 #include "sources.h"
 #include "store.h"
+#include "timesync.h"
 #include "widgets.h"
 
 #if CONFIG_TAVLE_BENCH
@@ -429,13 +431,22 @@ static void on_source_state(const ui_msg_t *m)
     lvgl_port_unlock();
 }
 
-/* Once a second: graph samples. */
+/* Once a second: clocks and graph samples. */
 static void tick(void)
 {
+    timesync_apply_tz();
+    struct tm tm_now;
+    const struct tm *now_tm = NULL;
+    if (timesync_valid()) {
+        time_t t = time(NULL);
+        localtime_r(&t, &tm_now);
+        now_tm = &tm_now;
+    }
     int64_t now = esp_timer_get_time();
 
     lvgl_port_lock(0);
     for (int sc = 0; sc < s_view_count; sc++) {
+        widgets_update_clocks(&s_views[sc], now_tm);
         for (int i = 0; i < s_views[sc].count; i++) {
             widget_view_t *w = &s_views[sc].widgets[i];
             if (w->def->kind == WIDGET_GRAPH && w->next_sample_us && !w->stale &&

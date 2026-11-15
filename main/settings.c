@@ -51,12 +51,17 @@ esp_err_t settings_init(void)
 
     memset(&s_cur, 0, sizeof(s_cur));
     s_cur.interval_min = SETTINGS_INTERVAL_DEF;
+    strlcpy(s_cur.tz, "UTC0", sizeof(s_cur.tz));
 
     nvs_handle_t h;
     if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
         load_str(h, "ssid", s_cur.ssid, sizeof(s_cur.ssid));
         load_str(h, "wifi_pass", s_cur.wifi_pass, sizeof(s_cur.wifi_pass));
         load_str(h, "layout_url", s_cur.layout_url, sizeof(s_cur.layout_url));
+        load_str(h, "tz", s_cur.tz, sizeof(s_cur.tz));
+        if (!s_cur.tz[0]) {
+            strlcpy(s_cur.tz, "UTC0", sizeof(s_cur.tz));
+        }
         uint16_t n;
         if (nvs_get_u16(h, "interval", &n) == ESP_OK &&
             n >= SETTINGS_INTERVAL_MIN && n <= SETTINGS_INTERVAL_MAX) {
@@ -95,6 +100,7 @@ esp_err_t settings_save(const settings_t *s)
     if (err == ESP_OK) err = nvs_set_str(h, "wifi_pass", s->wifi_pass);
     if (err == ESP_OK) err = nvs_set_str(h, "layout_url", s->layout_url);
     if (err == ESP_OK) err = nvs_set_u16(h, "interval", s->interval_min);
+    if (err == ESP_OK) err = nvs_set_str(h, "tz", s->tz);
     if (err == ESP_OK) {
         if (s->has_admin) {
             err = nvs_set_blob(h, "admin_salt", s->admin_salt, sizeof(s->admin_salt));

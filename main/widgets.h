@@ -41,6 +41,10 @@ void widgets_reset(screen_view_t *view);
 /* Dims a widget whose source is offline; its last value stays visible. */
 void widget_set_stale(widget_view_t *w, bool stale);
 
+/* Updates clock widgets; now == NULL before the clock is set. */
+struct tm;
+void widgets_update_clocks(screen_view_t *view, const struct tm *now);
+
 /* Changes every widget on the screen, for the refresh benchmark. */
 void widgets_bench_step(screen_view_t *view, int frame);
 

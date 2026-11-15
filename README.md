@@ -94,6 +94,11 @@ A graph adds a point every `period` seconds (default 10) and keeps 30 points.
 Widgets show `--` until their first value, and are dimmed while their source
 is offline.
 
+### Clock
+
+The clock gets the time from `pool.ntp.org`. Set the time zone on the setup
+page as a POSIX TZ string, for example `AEST-10AEDT,M10.1.0,M4.1.0/3`.
+
 Limits: 16 KB per layout file. HTTPS servers must have a certificate from a
 widely used authority; self-signed certificates are refused.
 

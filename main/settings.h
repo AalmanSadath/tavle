@@ -13,12 +13,14 @@
 #define SETTINGS_INTERVAL_MIN   1
 #define SETTINGS_INTERVAL_MAX   1440
 #define SETTINGS_INTERVAL_DEF   5
+#define SETTINGS_TZ_MAX         48
 
 typedef struct {
     char ssid[SETTINGS_SSID_MAX + 1];
     char wifi_pass[SETTINGS_WIFI_PASS_MAX + 1];
     char layout_url[SETTINGS_URL_MAX + 1];
     uint16_t interval_min;
+    char tz[SETTINGS_TZ_MAX + 1];  /* POSIX TZ string */
     bool has_admin;
     uint8_t admin_salt[16];
     uint8_t admin_hash[32];

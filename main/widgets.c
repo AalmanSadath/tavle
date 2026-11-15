@@ -305,6 +305,21 @@ static void set_clock(widget_view_t *w, int hour, int min)
     set_label(w->value, buf);
 }
 
+void widgets_update_clocks(screen_view_t *view, const struct tm *now)
+{
+    for (int i = 0; i < view->count; i++) {
+        widget_view_t *w = &view->widgets[i];
+        if (w->def->kind != WIDGET_CLOCK) {
+            continue;
+        }
+        char buf[24] = "--:--";
+        if (now && strftime(buf, sizeof(buf), w->def->format, now) == 0) {
+            buf[0] = '\0';
+        }
+        set_label(w->value, buf);
+    }
+}
+
 void widgets_reset(screen_view_t *view)
 {
     for (int i = 0; i < view->count; i++) {

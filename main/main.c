@@ -8,6 +8,7 @@
 #include "net.h"
 #include "settings.h"
 #include "store.h"
+#include "timesync.h"
 #include "ui.h"
 #include "web.h"
 
@@ -63,7 +64,11 @@ void app_main(void)
     store_init(); /* without it the device still runs on the built-in layout */
     ESP_ERROR_CHECK(fetch_start());
     ESP_ERROR_CHECK(ui_start(disp));
+    settings_t s;
+    settings_get(&s);
+    timesync_set_tz(s.tz);
     ESP_ERROR_CHECK(net_start(on_net_status));
+    timesync_start();
     ESP_ERROR_CHECK(web_start());
     log_heap("after wi-fi and web");
 

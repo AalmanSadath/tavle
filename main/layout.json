@@ -62,10 +62,16 @@
           "type": "text",
           "col": 0,
           "row": 3,
-          "colspan": 3,
+          "colspan": 2,
           "label": "File",
           "source": "printer",
           "path": "print_stats.filename"
+        },
+        {
+          "type": "clock",
+          "col": 2,
+          "row": 3,
+          "format": "%H:%M"
         }
       ]
     }
