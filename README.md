@@ -89,7 +89,15 @@ A widget's `path` is the Klipper object, a dot, and the field, for example
 `print_stats.print_duration`, `virtual_sdcard.progress` or
 `heater_fan heatbreak_cooling_fan.speed`.
 
-A graph adds a point every `period` seconds (default 10) and keeps 30 points.
+A graph can draw up to three values of one source:
+
+```json
+{ "type": "graph", "col": 0, "row": 1, "colspan": 3, "rowspan": 2,
+  "source": "printer", "paths": ["extruder.temperature", "heater_bed.temperature"],
+  "labels": ["nozzle", "bed"], "min": 0, "max": 260, "period": 10 }
+```
+
+`period` is the seconds between points; the graph keeps 30 points.
 
 Widgets show `--` until their first value, and are dimmed while their source
 is offline.

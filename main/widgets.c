@@ -126,7 +126,29 @@ static void build_widget(lv_obj_t *grid, widget_view_t *w)
         break;
 
     case WIDGET_GRAPH:
-        add_caption(w, d->label ? d->label : d->path);
+        if (d->path_count > 1) {
+            /* legend: optional label, then one coloured name per line */
+            lv_obj_t *row = lv_obj_create(w->cell);
+            lv_obj_remove_style_all(row);
+            lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_style_pad_column(row, 10, 0);
+            if (d->label) {
+                lv_obj_t *l = add_label(row, &lv_font_montserrat_14);
+                lv_obj_add_style(l, &s_caption, 0);
+                lv_label_set_text(l, d->label);
+            }
+            for (int i = 0; i < d->path_count; i++) {
+                lv_obj_t *l = add_label(row, &lv_font_montserrat_14);
+                lv_obj_set_style_text_color(l, SERIES_COLORS[i], 0);
+                char buf[40];
+                snprintf(buf, sizeof(buf), "\xe2\x80\xa2 %s",
+                         d->series_labels[i] ? d->series_labels[i] : d->paths[i]);
+                lv_label_set_text(l, buf);
+            }
+        } else {
+            add_caption(w, d->label ? d->label : d->path);
+        }
         w->shape = lv_chart_create(w->cell);
         lv_obj_set_width(w->shape, lv_pct(100));
         lv_obj_set_flex_grow(w->shape, 1);

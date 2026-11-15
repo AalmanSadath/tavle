@@ -24,9 +24,15 @@
           "col": 0,
           "row": 1,
           "colspan": 3,
-          "label": "Nozzle",
           "source": "printer",
-          "path": "extruder.temperature",
+          "paths": [
+            "extruder.temperature",
+            "heater_bed.temperature"
+          ],
+          "labels": [
+            "nozzle",
+            "bed"
+          ],
           "min": 0,
           "max": 260,
           "period": 10

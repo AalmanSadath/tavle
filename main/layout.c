@@ -173,7 +173,21 @@ static bool parse_widget(const cJSON *w, const layout_t *l, uint16_t *used,
     out->source = get_str(w, "source");
     out->path = get_str(w, "path");
     out->path_count = 0;
-    if (out->path) {
+    const cJSON *paths = cJSON_GetObjectItemCaseSensitive(w, "paths");
+    if (out->kind == WIDGET_GRAPH && cJSON_IsArray(paths)) {
+        /* A graph may draw several values of the same source. */
+        const cJSON *p;
+        cJSON_ArrayForEach(p, paths) {
+            if (cJSON_IsString(p) && p->valuestring[0] && out->path_count < LAYOUT_MAX_SERIES) {
+                out->paths[out->path_count++] = p->valuestring;
+            }
+        }
+        out->path = out->path_count ? out->paths[0] : NULL;
+        const cJSON *labels = cJSON_GetObjectItemCaseSensitive(w, "labels");
+        for (int i = 0; i < out->path_count; i++) {
+            out->series_labels[i] = cJSON_GetStringValue(cJSON_GetArrayItem(labels, i));
+        }
+    } else if (out->path) {
         out->paths[0] = out->path;
         out->path_count = 1;
     }
