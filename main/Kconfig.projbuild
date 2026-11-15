@@ -9,6 +9,14 @@ config TAVLE_LCD_SPI_MHZ
 
 config TAVLE_BENCH
     bool "Run refresh-rate benchmark after first draw"
-    default y
+    default n
+
+config TAVLE_WIFI_TX_POWER_QDBM
+    int "Wi-Fi transmit power limit (0.25 dBm steps, 0 = chip default)"
+    range 0 84
+    default 34
+    help
+        34 is 8.5 dBm. Small ESP32-C3 boards with a chip antenna often only
+        work with a reduced transmit power.
 
 endmenu

@@ -29,3 +29,7 @@ void widgets_fill_placeholders(screen_view_t *view);
 
 /* Changes every widget on the screen, for the refresh benchmark. */
 void widgets_bench_step(screen_view_t *view, int frame);
+
+/* Deletes the screens built by widgets_build. Call with the LVGL lock held,
+ * after another screen has been loaded. */
+void widgets_destroy(screen_view_t *views, int count);
