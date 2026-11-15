@@ -17,12 +17,23 @@ config TAVLE_BOARD_S3
 
 endchoice
 
+choice TAVLE_DISPLAY
+    prompt "Display"
+    default TAVLE_DISPLAY_ST7796
+    help
+        Display driver. Set in boards/<board>/sdkconfig.defaults.
+
+config TAVLE_DISPLAY_ST7796
+    bool "ST7796, 320 x 480, four-wire SPI"
+
+endchoice
+
 config TAVLE_LCD_SPI_MHZ
     int "Display SPI clock (MHz)"
     range 1 80
     default 40
     help
-        SPI clock used for pixel data to the ST7796.
+        SPI clock used for pixel data to an SPI display.
 
 config TAVLE_BENCH
     bool "Run refresh-rate benchmark after first draw"

@@ -1,213 +1,81 @@
 #include "display.h"
 
-#include <inttypes.h>
-#include <string.h>
-
 #include "board.h"
-#include "driver/gpio.h"
-#include "driver/spi_master.h"
+#include "display_driver.h"
 #include "esp_check.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_st7796.h"
+#include "esp_lcd_panel_io.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 static const char *TAG = "display";
 
-static esp_lcd_panel_io_handle_t s_io;
-static esp_lcd_panel_handle_t s_panel;
+#if CONFIG_TAVLE_DISPLAY_ST7796
+#define DRIVER display_st7796
+#else
+#error "no display driver selected"
+#endif
+
+static display_panel_t s_panel;
 static lv_display_t *s_disp;
 
 #define MARK_SIZE 10
 #define MARK_GAP  4
 static uint16_t s_mark[MARK_SIZE * MARK_SIZE]; /* internal RAM, DMA capable */
 
-#define BUF_PIXELS (TAVLE_LCD_H_RES * TAVLE_LCD_BUF_LINES)
-
-static esp_err_t bus_init(bool with_miso)
+esp_err_t display_init(lv_display_t **disp_out)
 {
-    const spi_bus_config_t bus = {
-        .sclk_io_num = TAVLE_PIN_LCD_SCK,
-        .mosi_io_num = TAVLE_PIN_LCD_MOSI,
-        .miso_io_num = with_miso ? TAVLE_PIN_LCD_MISO : -1,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = BUF_PIXELS * sizeof(uint16_t),
-    };
-    return spi_bus_initialize(TAVLE_LCD_HOST, &bus, SPI_DMA_CH_AUTO);
-}
-
-static void hw_reset(void)
-{
-    gpio_set_level(TAVLE_PIN_LCD_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(TAVLE_PIN_LCD_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(120));
-}
-
-/* One read command: command byte with DC low, then n bytes clocked in with
- * DC high, CS held low across both phases. */
-static esp_err_t read_reg(spi_device_handle_t dev, uint8_t cmd, uint8_t *out, size_t n)
-{
-    ESP_RETURN_ON_ERROR(spi_device_acquire_bus(dev, portMAX_DELAY), TAG, "acquire");
-
-    spi_transaction_t t = {
-        .flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_CS_KEEP_ACTIVE,
-        .length = 8,
-        .tx_data = {cmd},
-    };
-    gpio_set_level(TAVLE_PIN_LCD_DC, 0);
-    esp_err_t err = spi_device_polling_transmit(dev, &t);
-
-    if (err == ESP_OK) {
-        memset(&t, 0, sizeof(t));
-        t.flags = SPI_TRANS_USE_RXDATA;
-        t.length = 8 * n;
-        t.rxlength = 8 * n;
-        gpio_set_level(TAVLE_PIN_LCD_DC, 1);
-        err = spi_device_polling_transmit(dev, &t);
-        memcpy(out, t.rx_data, n);
-    }
-
-    spi_device_release_bus(dev);
-    return err;
-}
-
-static uint32_t unshift_dummy_bit(const uint8_t b[4])
-{
-    uint32_t raw = (uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | b[3];
-    return (raw << 1) >> 8;
-}
-
-static esp_err_t read_id(display_id_t *id)
-{
-    const gpio_config_t out = {
-        .pin_bit_mask = BIT64(TAVLE_PIN_LCD_DC) | BIT64(TAVLE_PIN_LCD_RST),
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&out), TAG, "gpio");
-    hw_reset();
-
-    ESP_RETURN_ON_ERROR(bus_init(true), TAG, "bus with miso");
-
-    const spi_device_interface_config_t devcfg = {
-        .clock_speed_hz = 1 * 1000 * 1000,
-        .mode = 0,
-        .spics_io_num = TAVLE_PIN_LCD_CS,
-        .queue_size = 1,
-    };
-    spi_device_handle_t dev;
-    ESP_RETURN_ON_ERROR(spi_bus_add_device(TAVLE_LCD_HOST, &devcfg, &dev), TAG, "add dev");
-
-    esp_err_t err = read_reg(dev, 0xD3, id->id4, 4);
-    if (err == ESP_OK) {
-        err = read_reg(dev, 0x04, id->rddid, 4);
-    }
-
-    spi_bus_remove_device(dev);
-    spi_bus_free(TAVLE_LCD_HOST);
-
-    /* In four-wire SPI the panel sends one dummy bit before the data, so
-     * the 24-bit value sits one bit to the right inside the four bytes. */
-    id->id4_value = unshift_dummy_bit(id->id4);
-    id->rddid_value = unshift_dummy_bit(id->rddid);
-    id->is_st7796 = id->id4_value == 0x007796;
-    ESP_LOGI(TAG, "ID4 (0xD3): raw %02x %02x %02x %02x, id %06" PRIx32 " -> %s",
-             id->id4[0], id->id4[1], id->id4[2], id->id4[3], id->id4_value,
-             id->is_st7796 ? "ST7796" : "not ST7796 (or MISO not connected)");
-    ESP_LOGI(TAG, "RDDID (0x04): raw %02x %02x %02x %02x, id %06" PRIx32,
-             id->rddid[0], id->rddid[1], id->rddid[2], id->rddid[3], id->rddid_value);
-    return err;
-}
-
-esp_err_t display_init(display_id_t *id_out, lv_display_t **disp_out)
-{
-    display_id_t id = {0};
-    if (read_id(&id) != ESP_OK) {
-        ESP_LOGW(TAG, "ID read failed, continuing");
-    }
-    if (id_out) {
-        *id_out = id;
-    }
-
-    const gpio_config_t bl = {
-        .pin_bit_mask = BIT64(TAVLE_PIN_LCD_BL),
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&bl), TAG, "bl gpio");
-    gpio_set_level(TAVLE_PIN_LCD_BL, 0);
-
-    /* Pixel data only goes out, so the running bus has no MISO and every
-     * remaining pin sits on IOMUX. */
-    ESP_RETURN_ON_ERROR(bus_init(false), TAG, "bus");
-
-    const esp_lcd_panel_io_spi_config_t io_cfg = {
-        .dc_gpio_num = TAVLE_PIN_LCD_DC,
-        .cs_gpio_num = TAVLE_PIN_LCD_CS,
-        .pclk_hz = CONFIG_TAVLE_LCD_SPI_MHZ * 1000 * 1000,
-        .lcd_cmd_bits = 8,
-        .lcd_param_bits = 8,
-        .spi_mode = 0,
-        .trans_queue_depth = 10,
-    };
-    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)TAVLE_LCD_HOST,
-                                                 &io_cfg, &s_io), TAG, "panel io");
-
-    const esp_lcd_panel_dev_config_t panel_cfg = {
-        .reset_gpio_num = TAVLE_PIN_LCD_RST,
-        .rgb_ele_order = TAVLE_LCD_BGR ? LCD_RGB_ELEMENT_ORDER_BGR : LCD_RGB_ELEMENT_ORDER_RGB,
-        .bits_per_pixel = 16,
-    };
-    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_st7796(s_io, &panel_cfg, &s_panel), TAG, "panel");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(s_panel), TAG, "reset");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_panel), TAG, "init");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(s_panel, TAVLE_LCD_INVERT), TAG, "invert");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(s_panel, TAVLE_LCD_MIRROR_X, TAVLE_LCD_MIRROR_Y),
-                        TAG, "mirror");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true), TAG, "on");
+    ESP_RETURN_ON_ERROR(DRIVER.init(TAVLE_LCD_BUF_LINES, &s_panel), TAG, "%s", DRIVER.name);
 
     const lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     ESP_RETURN_ON_ERROR(lvgl_port_init(&port_cfg), TAG, "lvgl port");
 
     const lvgl_port_display_cfg_t disp_cfg = {
-        .io_handle = s_io,
-        .panel_handle = s_panel,
-        .buffer_size = BUF_PIXELS,
+        .io_handle = s_panel.io,
+        .panel_handle = s_panel.panel,
+        .buffer_size = s_panel.width * TAVLE_LCD_BUF_LINES,
         .double_buffer = TAVLE_LCD_DOUBLE_BUF,
-        .hres = TAVLE_LCD_H_RES,
-        .vres = TAVLE_LCD_V_RES,
+        .hres = s_panel.width,
+        .vres = s_panel.height,
         .monochrome = false,
         .color_format = LV_COLOR_FORMAT_RGB565,
         .rotation = {
-            .swap_xy = false,
-            .mirror_x = TAVLE_LCD_MIRROR_X,
-            .mirror_y = TAVLE_LCD_MIRROR_Y,
+            .swap_xy = s_panel.swap_xy,
+            .mirror_x = s_panel.mirror_x,
+            .mirror_y = s_panel.mirror_y,
         },
         .flags = {
             .buff_dma = true,
-            .swap_bytes = true,
+            .swap_bytes = s_panel.swap_bytes,
         },
     };
     lv_display_t *disp = lvgl_port_add_disp(&disp_cfg);
     ESP_RETURN_ON_FALSE(disp, ESP_FAIL, TAG, "add disp");
 
-    gpio_set_level(TAVLE_PIN_LCD_BL, 1);
+    DRIVER.backlight(true);
     s_disp = disp;
     *disp_out = disp;
-    ESP_LOGI(TAG, "%s: panel up at %d MHz, %dx%d, %s %d-line buffer%s", TAVLE_BOARD_NAME,
-             CONFIG_TAVLE_LCD_SPI_MHZ, TAVLE_LCD_H_RES, TAVLE_LCD_V_RES,
+    ESP_LOGI(TAG, "%s %dx%d on %s at %d MHz, %s %d-line buffer%s", DRIVER.name,
+             s_panel.width, s_panel.height, TAVLE_BOARD_NAME, CONFIG_TAVLE_LCD_SPI_MHZ,
              TAVLE_LCD_DOUBLE_BUF ? "two" : "one", TAVLE_LCD_BUF_LINES,
              TAVLE_LCD_DOUBLE_BUF ? "s" : "");
     return ESP_OK;
 }
 
+int display_width(void)
+{
+    return s_panel.width;
+}
+
+int display_height(void)
+{
+    return s_panel.height;
+}
+
 void display_wait_idle(void)
 {
-    /* A parameter write on the SPI panel IO waits for all queued colour
+    /* A parameter write on the panel IO waits for all queued colour
      * transfers to finish before it goes out. NOP (0x00) changes nothing. */
-    esp_lcd_panel_io_tx_param(s_io, 0x00, NULL, 0);
+    esp_lcd_panel_io_tx_param(s_panel.io, 0x00, NULL, 0);
 }
 
 void display_freeze(bool freeze)
@@ -223,10 +91,12 @@ void display_freeze(bool freeze)
 
 void display_draw_mark(void)
 {
-    /* 0x8e8e93 is 0x8872 in RGB565; bytes swapped like the LVGL output */
+    /* 0x8e8e93 is 0x8872 in RGB565 */
+    const uint16_t grey = s_panel.swap_bytes ? 0x7288 : 0x8872;
     for (int i = 0; i < MARK_SIZE * MARK_SIZE; i++) {
-        s_mark[i] = 0x7288;
+        s_mark[i] = grey;
     }
-    int x = TAVLE_LCD_H_RES - MARK_GAP - MARK_SIZE;
-    esp_lcd_panel_draw_bitmap(s_panel, x, MARK_GAP, x + MARK_SIZE, MARK_GAP + MARK_SIZE, s_mark);
+    int x = s_panel.width - MARK_GAP - MARK_SIZE;
+    esp_lcd_panel_draw_bitmap(s_panel.panel, x, MARK_GAP, x + MARK_SIZE, MARK_GAP + MARK_SIZE,
+                              s_mark);
 }

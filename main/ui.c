@@ -552,7 +552,8 @@ static void show_setup(const net_status_t *n)
 
     snprintf(buf, sizeof(buf), "WIFI:T:WPA;S:%s;P:%s;;", n->ap_ssid, n->ap_pass);
     lv_obj_t *qr = lv_qrcode_create(scr);
-    lv_qrcode_set_size(qr, 160);
+    int short_side = display_width() < display_height() ? display_width() : display_height();
+    lv_qrcode_set_size(qr, short_side / 2); /* 160 on 320 x 480 */
     lv_qrcode_set_dark_color(qr, lv_color_black());
     lv_qrcode_set_light_color(qr, lv_color_white());
     lv_obj_set_style_border_color(qr, lv_color_white(), 0);
@@ -594,7 +595,7 @@ static void show_dashboard(const net_status_t *n)
 
     /* Address toast on the top layer, gone after TOAST_MS. */
     lv_obj_t *toast = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(toast, 240, LV_SIZE_CONTENT);
+    lv_obj_set_size(toast, display_width() * 3 / 4, LV_SIZE_CONTENT);
     lv_obj_align(toast, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(toast, lv_color_hex(0x2c2c2e), 0);
     lv_obj_set_style_border_width(toast, 0, 0);

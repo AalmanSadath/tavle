@@ -53,8 +53,7 @@ void app_main(void)
     /* Display first: its DMA buffers need large free blocks, which Wi-Fi
      * would fragment. */
     lv_display_t *disp;
-    display_id_t id;
-    ESP_ERROR_CHECK(display_init(&id, &disp));
+    ESP_ERROR_CHECK(display_init(&disp));
     log_heap("after display init");
 
     /* The network stack must exist before the UI starts: a saved layout can
