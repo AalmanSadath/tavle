@@ -1,29 +1,25 @@
 #pragma once
 
-#include "driver/gpio.h"
-#include "driver/spi_master.h"
+#include <stdbool.h>
 
-/* Display: ST7796, 320 x 480, four-wire SPI. SCK, MOSI and CS sit on the
- * ESP32-C3 FSPI IOMUX pins so the bus can run at 80 MHz without the GPIO
- * matrix. MISO is only used for the ID read at boot. */
-#define TAVLE_LCD_HOST      SPI2_HOST
-#define TAVLE_PIN_LCD_SCK   GPIO_NUM_6
-#define TAVLE_PIN_LCD_MOSI  GPIO_NUM_7
-#define TAVLE_PIN_LCD_MISO  GPIO_NUM_5
-#define TAVLE_PIN_LCD_CS    GPIO_NUM_10
-#define TAVLE_PIN_LCD_DC    GPIO_NUM_4
-#define TAVLE_PIN_LCD_RST   GPIO_NUM_3
-#define TAVLE_PIN_LCD_BL    GPIO_NUM_1
+#include "sdkconfig.h"
 
-/* Push button to GND, internal pull-up. */
-#define TAVLE_PIN_BUTTON    GPIO_NUM_0
+/* Board profile, picked at build time with idf.py -DBOARD=<board>. Pins and
+ * display settings are macros in boards/<board>/board.h; the limits are also
+ * in board_profile for code that reports them. */
+#if CONFIG_TAVLE_BOARD_C3
+#include "../boards/c3/board.h"
+#elif CONFIG_TAVLE_BOARD_S3
+#include "../boards/s3/board.h"
+#else
+#error "no board profile selected"
+#endif
 
-#define TAVLE_LCD_H_RES     320
-#define TAVLE_LCD_V_RES     480
-#define TAVLE_LCD_BUF_LINES 20
+typedef struct {
+    const char *name;
+    int max_sources;    /* sources running at once */
+    int max_images;     /* image widgets */
+    bool keep_running;  /* default of "keep other screens running" */
+} board_profile_t;
 
-/* Panel options, adjusted after first look at the screen. */
-#define TAVLE_LCD_BGR       1
-#define TAVLE_LCD_INVERT    0
-#define TAVLE_LCD_MIRROR_X  1
-#define TAVLE_LCD_MIRROR_Y  0
+extern const board_profile_t board_profile;
