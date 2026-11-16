@@ -175,6 +175,17 @@ A graph can draw up to three values of one source:
 Widgets show `--` until their first value, and are dimmed while their source
 is offline.
 
+### Moonraker data beyond Klipper
+
+A `moonraker` source also reads Moonraker's own data. Each group below is only
+asked for when a widget uses one of its paths. A path continues into the
+reply with dots; a number picks a list item, and `count` gives a list's
+length.
+
+| path | from | updated |
+|---|---|---|
+| `moonraker.meta.<field>` | the printing file's metadata, for example `filament_name`, `filament_type`, `nozzle_diameter`, `slicer`, `filament_colors.0` | when the file changes |
+
 ### Clock
 
 The clock gets the time from `pool.ntp.org`. Set the time zone on the setup

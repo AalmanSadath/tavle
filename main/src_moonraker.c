@@ -44,6 +44,13 @@ static const char *const DERIVED[D_COUNT] = {
     [D_USED_G] = "tavle.filament_used_g",
     [D_TOTAL_G] = "tavle.filament_total_g",
 };
+/* Moonraker's own data, beyond Klipper objects. A group is only asked for
+ * when a widget reads one of its paths. */
+enum { G_META, G_COUNT };
+static const char *const GROUP_PREFIX[G_COUNT] = {
+    [G_META] = "moonraker.meta.",
+};
+
 #define THUMB_MIN_W 100 /* smallest thumbnail worth showing in a cell */
 #define THUMB_MAX_W 1024 /* widest the PNG decoder takes */
 
@@ -93,6 +100,7 @@ typedef struct {
     char filename[128];
     file_meta_t meta;
     last_t last[D_COUNT];
+    bool gwant[G_COUNT];
 } mr_t;
 
 /* Reports go out only while the source runs: stop() may return before the
@@ -127,6 +135,83 @@ static void report_state(mr_t *m, src_state_t state, const char *detail)
 static bool is_derived(const char *path)
 {
     return strncmp(path, DERIVED_PREFIX, strlen(DERIVED_PREFIX)) == 0;
+}
+
+/* The group a path belongs to, or -1 for a Klipper object path. */
+static int group_of(const char *path)
+{
+    for (int g = 0; g < G_COUNT; g++) {
+        if (strncmp(path, GROUP_PREFIX[g], strlen(GROUP_PREFIX[g])) == 0) {
+            return g;
+        }
+    }
+    return -1;
+}
+
+/* Not a Klipper object: computed here or read from a Moonraker call. */
+static bool not_klipper(const char *path)
+{
+    return is_derived(path) || group_of(path) >= 0;
+}
+
+/* Follows a dotted path into JSON: "a.b.0.c" takes list item 0 of b, and a
+ * last segment "count" on a list gives its length. *count_out is set then. */
+static const cJSON *json_at(const cJSON *v, const char *path, double *count_out, bool *is_count)
+{
+    char seg[SRC_PATH_MAX];
+    *is_count = false;
+    while (v && path && *path) {
+        size_t n = strcspn(path, ".");
+        snprintf(seg, sizeof(seg), "%.*s", (int)n, path);
+        const char *next = path[n] ? path + n + 1 : NULL;
+        if (cJSON_IsArray(v)) {
+            if (!next && strcmp(seg, "count") == 0) {
+                *count_out = cJSON_GetArraySize(v);
+                *is_count = true;
+                return v;
+            }
+            char *end;
+            long i = strtol(seg, &end, 10);
+            v = (*end == '\0' && end != seg) ? cJSON_GetArrayItem(v, (int)i) : NULL;
+        } else {
+            v = cJSON_GetObjectItemCaseSensitive(v, seg);
+        }
+        path = next;
+    }
+    return v;
+}
+
+/* Reports path, read from root at path + skip, as a number or text. */
+static void report_json(mr_t *m, const char *path, size_t skip, const cJSON *root)
+{
+    double count;
+    bool is_count;
+    const cJSON *v = json_at(root, path + skip, &count, &is_count);
+    if (is_count) {
+        report_number(m, path, count);
+    } else if (cJSON_IsNumber(v)) {
+        report_number(m, path, v->valuedouble);
+    } else if (cJSON_IsBool(v)) {
+        report_number(m, path, cJSON_IsTrue(v) ? 1 : 0);
+    } else if (cJSON_IsString(v)) {
+        report_text(m, path, v->valuestring);
+    } else {
+        report_text(m, path, "--");
+    }
+}
+
+/* Reports every wanted path of group g from root; root NULL shows "--". */
+static void report_group(mr_t *m, int g, const cJSON *root)
+{
+    if (!m->gwant[g]) {
+        return;
+    }
+    size_t skip = strlen(GROUP_PREFIX[g]);
+    for (int i = 0; i < m->npaths; i++) {
+        if (group_of(m->paths[i]) == g) {
+            report_json(m, m->paths[i], skip, root);
+        }
+    }
 }
 
 static void send_json(mr_t *m, const char *method, int id, cJSON *params)
@@ -177,7 +262,7 @@ static void subscribe(mr_t *m)
     for (int i = 0; i < total; i++) {
         const char *path = i < m->npaths ? m->paths[i] : inputs[i - m->npaths];
         const char *rest;
-        if (is_derived(path) || !split_path(path, obj, sizeof(obj), &rest)) {
+        if (not_klipper(path) || !split_path(path, obj, sizeof(obj), &rest)) {
             continue;
         }
         cJSON *fields = cJSON_GetObjectItemCaseSensitive(objects, obj);
@@ -216,6 +301,7 @@ static void request_metadata(mr_t *m)
 {
     memset(&m->meta, 0, sizeof(m->meta));
     if (!m->filename[0]) {
+        report_group(m, G_META, NULL);
         return;
     }
     cJSON *p = cJSON_CreateObject();
@@ -498,23 +584,21 @@ static void report_status(mr_t *m, const cJSON *status)
         take_inputs(m, status);
         update_derived(m);
     }
-    char obj[SRC_PATH_MAX], seg[SRC_PATH_MAX];
+    char obj[SRC_PATH_MAX];
     for (int i = 0; i < m->npaths; i++) {
         const char *rest;
-        if (!split_path(m->paths[i], obj, sizeof(obj), &rest) || !rest) {
+        if (not_klipper(m->paths[i]) || !split_path(m->paths[i], obj, sizeof(obj), &rest) ||
+            !rest) {
             continue;
         }
-        const cJSON *v = cJSON_GetObjectItemCaseSensitive(status, obj);
-        while (v && rest && *rest) {
-            size_t n = strcspn(rest, ".");
-            snprintf(seg, sizeof(seg), "%.*s", (int)n, rest);
-            v = cJSON_GetObjectItemCaseSensitive(v, seg);
-            rest = rest[n] ? rest + n + 1 : NULL;
-        }
-        if (!v) {
-            continue;
-        }
-        if (cJSON_IsNumber(v)) {
+        /* an update only carries what changed: skip paths it does not hold */
+        double count;
+        bool is_count;
+        const cJSON *v = json_at(cJSON_GetObjectItemCaseSensitive(status, obj), rest, &count,
+                                 &is_count);
+        if (is_count) {
+            report_number(m, m->paths[i], count);
+        } else if (cJSON_IsNumber(v)) {
             report_number(m, m->paths[i], v->valuedouble);
         } else if (cJSON_IsBool(v)) {
             report_number(m, m->paths[i], cJSON_IsTrue(v) ? 1 : 0);
@@ -572,6 +656,7 @@ static void handle_message(mr_t *m, const char *json, int len)
     } else if (cJSON_IsNumber(id) && id->valueint == ID_METADATA) {
         on_metadata(m, result);
         update_derived(m);
+        report_group(m, G_META, result);
     } else if (method && strcmp(method, "notify_status_update") == 0) {
         report_status(m, cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(msg, "params"), 0));
     } else if (method && strcmp(method, "notify_klippy_ready") == 0) {
@@ -732,6 +817,12 @@ static void *mr_start(int index, const cJSON *config, const char *const *paths, 
             if (strcmp(paths[i], DERIVED[d]) == 0) {
                 m->want[d] = m->want_any = true;
             }
+        }
+        int g = group_of(paths[i]);
+        if (g >= 0) {
+            m->gwant[g] = true;
+            /* metadata comes with the file name */
+            m->want_any |= g == G_META;
         }
     }
 
