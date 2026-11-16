@@ -14,7 +14,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "mdns.h"
+#include "nvs.h"
 #include "settings.h"
 
 static const char *TAG = "net";
@@ -23,6 +25,10 @@ static const char *TAG = "net";
 #define RETRY_MIN_MS        2000
 #define RETRY_MAX_MS        30000
 #define AP_MAX_CLIENTS      2
+#define NAME_BASE           "tavle"
+#define NAME_MAX_SUFFIX     9      /* tavle, tavle-2 ... tavle-9 */
+#define NAME_QUERY_MS       1500
+#define NAME_SETTLE_MS      1000   /* mDNS starts on the new IP after us */
 
 typedef enum {
     EV_GOT_IP,
@@ -188,6 +194,78 @@ static void connect_saved(void)
     ESP_LOGI(TAG, "joining '%s'", s.ssid);
 }
 
+/* True when another device on the network answers to name.local. */
+static bool name_taken(const char *name)
+{
+    esp_ip4_addr_t addr = {0};
+    if (mdns_query_a(name, NAME_QUERY_MS, &addr) != ESP_OK) {
+        return false;
+    }
+    char ip[16];
+    snprintf(ip, sizeof(ip), IPSTR, IP2STR(&addr));
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool mine = strcmp(ip, s_status.ip) == 0;
+    xSemaphoreGive(s_lock);
+    if (!mine) {
+        ESP_LOGI(TAG, "%s.local is taken by %s", name, ip);
+    }
+    return !mine;
+}
+
+/* On the first join: keep the name used last time if it is still free, else
+ * the first free one of tavle, tavle-2 ... tavle-9. Saved, so boards keep
+ * their names across restarts. When two boards still collide later, the
+ * mDNS responder renames one itself; the status shows the name in use. */
+static void claim_hostname(void)
+{
+    static bool claimed;
+    if (claimed) {
+        return;
+    }
+    claimed = true;
+    /* mDNS enables the interface on the same got-IP event, on its own task;
+     * a query sent before that goes nowhere and every name looks free. */
+    vTaskDelay(pdMS_TO_TICKS(NAME_SETTLE_MS));
+
+    char saved[24] = "";
+    nvs_handle_t h;
+    if (nvs_open("tavle", NVS_READONLY, &h) == ESP_OK) {
+        size_t len = sizeof(saved);
+        if (nvs_get_str(h, "hostname", saved, &len) != ESP_OK) {
+            saved[0] = '\0';
+        }
+        nvs_close(h);
+    }
+
+    char name[24] = "";
+    if (saved[0] && !name_taken(saved)) {
+        strlcpy(name, saved, sizeof(name));
+    }
+    for (int i = 1; !name[0] && i <= NAME_MAX_SUFFIX; i++) {
+        char c[24];
+        if (i == 1) {
+            strlcpy(c, NAME_BASE, sizeof(c));
+        } else {
+            snprintf(c, sizeof(c), NAME_BASE "-%d", i);
+        }
+        if (strcmp(c, saved) != 0 && !name_taken(c)) {
+            strlcpy(name, c, sizeof(name));
+        }
+    }
+    if (!name[0]) {
+        strlcpy(name, NAME_BASE, sizeof(name)); /* all taken: let the responder rename */
+    }
+
+    mdns_hostname_set(name);
+    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    if (strcmp(name, saved) != 0 && nvs_open("tavle", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "hostname", name);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    ESP_LOGI(TAG, "reachable as %s.local", name);
+}
+
 static void handle(net_event_t ev)
 {
     switch (ev) {
@@ -195,6 +273,7 @@ static void handle(net_event_t ev)
         esp_timer_stop(s_fallback_timer);
         esp_timer_stop(s_retry_timer);
         s_retry_ms = RETRY_MIN_MS;
+        claim_hostname(); /* before the connected screen, which shows the name */
         set_state(NET_CONNECTED);
         stop_ap();
         break;
@@ -307,10 +386,9 @@ esp_err_t net_start(net_status_cb_t cb)
     ESP_ERROR_CHECK(esp_timer_create(&fb, &s_fallback_timer));
     ESP_ERROR_CHECK(esp_timer_create(&rt, &s_retry_timer));
 
+    /* The host name is picked on the first join, see claim_hostname. */
     if (mdns_init() == ESP_OK) {
-        mdns_hostname_set("tavle");
-        mdns_instance_name_set("tavle");
-        mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+        mdns_instance_name_set(NAME_BASE);
     } else {
         ESP_LOGW(TAG, "mDNS failed to start");
     }
@@ -324,6 +402,11 @@ void net_get_status(net_status_t *out)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     *out = s_status;
     xSemaphoreGive(s_lock);
+    char host[MDNS_NAME_BUF_LEN] = ""; /* the responder may have renamed it */
+    if (mdns_hostname_get(host) != ESP_OK) {
+        host[0] = '\0';
+    }
+    strlcpy(out->hostname, host, sizeof(out->hostname));
     out->rssi = 0;
     wifi_ap_record_t ap;
     if (out->state == NET_CONNECTED && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {

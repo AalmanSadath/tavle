@@ -19,6 +19,7 @@ typedef struct {
     char ip[16];       /* station IP when connected */
     char ap_ssid[16];  /* setup hotspot */
     char ap_pass[9];   /* setup hotspot password, shown on screen only */
+    char hostname[24]; /* mDNS name without ".local", "" before the first join */
     int8_t rssi;
 } net_status_t;
 
