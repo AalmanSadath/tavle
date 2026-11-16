@@ -29,6 +29,7 @@ enum { ID_IDENTIFY = 1, ID_INFO = 2, ID_SUBSCRIBE = 3, ID_METADATA = 4 };
 #define DERIVED_PREFIX "tavle."
 enum {
     D_SLICER, D_KLIPPER, D_FILE, D_FILAMENT, D_PROGRESS, D_FILENAME, D_LAYER, D_THUMB,
+    D_USED_G, D_TOTAL_G,
     D_COUNT
 };
 static const char *const DERIVED[D_COUNT] = {
@@ -40,6 +41,8 @@ static const char *const DERIVED[D_COUNT] = {
     [D_FILENAME] = "tavle.filename",
     [D_LAYER] = "tavle.layer",
     [D_THUMB] = "tavle.thumbnail",
+    [D_USED_G] = "tavle.filament_used_g",
+    [D_TOTAL_G] = "tavle.filament_total_g",
 };
 #define THUMB_MIN_W 100 /* smallest thumbnail worth showing in a cell */
 #define THUMB_MAX_W 1024 /* widest the PNG decoder takes */
@@ -55,6 +58,7 @@ typedef struct {
 typedef struct {
     double estimated_time;
     double filament_total;
+    double filament_weight; /* grams for the whole print */
     double start_byte, end_byte;
     double layer_count, first_layer_height, layer_height, object_height;
     char thumb[160]; /* path of the chosen thumbnail, below the gcodes root */
@@ -260,6 +264,7 @@ static void on_metadata(mr_t *m, const cJSON *r)
     file_meta_t *f = &m->meta;
     f->estimated_time = num_or(r, "estimated_time", 0);
     f->filament_total = num_or(r, "filament_total", 0);
+    f->filament_weight = num_or(r, "filament_weight_total", 0);
     f->start_byte = num_or(r, "gcode_start_byte", 0);
     f->end_byte = num_or(r, "gcode_end_byte", 0);
     f->layer_count = num_or(r, "layer_count", 0);
@@ -454,6 +459,12 @@ static void update_derived(mr_t *m)
     int nest = file_ok + fil_ok;
     emit_num_or_none(m, D_KLIPPER, nest > 0, nest ? (file_est + fil_est) / nest : 0);
     emit(m, D_PROGRESS, true, fp, NULL);
+
+    /* grams: the slicer's weight for the print, scaled by length used */
+    bool g_ok = m->filename[0] && m->meta.filament_weight > 0;
+    emit_num_or_none(m, D_TOTAL_G, g_ok, m->meta.filament_weight);
+    emit_num_or_none(m, D_USED_G, g_ok && m->meta.filament_total > 0,
+                     m->meta.filament_weight * m->filament_used / m->meta.filament_total);
 
     char buf[SRC_TEXT_MAX];
     const char *base = strrchr(m->filename, '/');

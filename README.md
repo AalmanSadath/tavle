@@ -135,6 +135,8 @@ device, the same way Mainsail shows them:
 | `tavle.layer` | current layer and layer count, as `12/67` |
 | `tavle.filename` | file name without folder and `.gcode`; a slicer suffix like `_PETG_1h18m` is dropped |
 | `tavle.thumbnail` | address of the file's thumbnail, for an `image` widget |
+| `tavle.filament_used_g` | grams of filament used so far: the slicer's weight for the print, scaled by length used |
+| `tavle.filament_total_g` | grams of filament the slicer planned for the print |
 
 The remaining times and the layer show `--` when nothing is printing. Use
 `"format": "duration"` to show seconds as `1h 23m`, or `23:05` under an hour.
