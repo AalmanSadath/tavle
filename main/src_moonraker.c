@@ -22,7 +22,8 @@ static const char *TAG = "moonraker";
 #define BACKOFF_MIN_MS  2000
 #define BACKOFF_MAX_MS  30000
 
-enum { ID_IDENTIFY = 1, ID_INFO = 2, ID_SUBSCRIBE = 3, ID_METADATA = 4, ID_PROC = 5, ID_SYSTEM = 6 };
+enum { ID_IDENTIFY = 1, ID_INFO = 2, ID_SUBSCRIBE = 3, ID_METADATA = 4, ID_PROC = 5, ID_SYSTEM = 6,
+       ID_HISTORY = 7, ID_QUEUE = 8 };
 
 /* Values computed here rather than read from Klipper, worked out the way
  * Mainsail does so the two agree. */
@@ -46,11 +47,13 @@ static const char *const DERIVED[D_COUNT] = {
 };
 /* Moonraker's own data, beyond Klipper objects. A group is only asked for
  * when a widget reads one of its paths. */
-enum { G_META, G_PROC, G_SYSTEM, G_COUNT };
+enum { G_META, G_PROC, G_SYSTEM, G_HISTORY, G_QUEUE, G_COUNT };
 static const char *const GROUP_PREFIX[G_COUNT] = {
     [G_META] = "moonraker.meta.",     /* the printing file's metadata */
     [G_PROC] = "moonraker.proc.",     /* host stats, pushed every second */
     [G_SYSTEM] = "moonraker.system.", /* host description, once per connect */
+    [G_HISTORY] = "moonraker.history.", /* job totals, again after each job */
+    [G_QUEUE] = "moonraker.queue.",   /* job queue, again when it changes */
 };
 
 #define THUMB_MIN_W 100 /* smallest thumbnail worth showing in a cell */
@@ -319,6 +322,12 @@ static void request_groups(mr_t *m)
     }
     if (m->gwant[G_SYSTEM]) {
         send_json(m, "machine.system_info", ID_SYSTEM, NULL);
+    }
+    if (m->gwant[G_HISTORY]) {
+        send_json(m, "server.history.totals", ID_HISTORY, NULL);
+    }
+    if (m->gwant[G_QUEUE]) {
+        send_json(m, "server.job_queue.status", ID_QUEUE, NULL);
     }
 }
 
@@ -681,6 +690,18 @@ static void handle_message(mr_t *m, const char *json, int len)
         report_group(m, G_PROC, result);
     } else if (cJSON_IsNumber(id) && id->valueint == ID_SYSTEM) {
         report_group(m, G_SYSTEM, cJSON_GetObjectItemCaseSensitive(result, "system_info"));
+    } else if (cJSON_IsNumber(id) && id->valueint == ID_HISTORY) {
+        report_group(m, G_HISTORY, cJSON_GetObjectItemCaseSensitive(result, "job_totals"));
+    } else if (cJSON_IsNumber(id) && id->valueint == ID_QUEUE) {
+        report_group(m, G_QUEUE, result);
+    } else if (method && strcmp(method, "notify_history_changed") == 0) {
+        if (m->gwant[G_HISTORY]) {
+            send_json(m, "server.history.totals", ID_HISTORY, NULL); /* a job was added or finished */
+        }
+    } else if (method && strcmp(method, "notify_job_queue_changed") == 0) {
+        if (m->gwant[G_QUEUE]) {
+            send_json(m, "server.job_queue.status", ID_QUEUE, NULL);
+        }
     } else if (method && strcmp(method, "notify_proc_stat_update") == 0) {
         report_group(m, G_PROC, cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(msg, "params"), 0));
     } else if (method && strcmp(method, "notify_status_update") == 0) {

@@ -187,6 +187,8 @@ length.
 | `moonraker.meta.<field>` | the printing file's metadata, for example `filament_name`, `filament_type`, `nozzle_diameter`, `slicer`, `filament_colors.0` | when the file changes |
 | `moonraker.proc.<field>` | host stats, for example `cpu_temp`, `system_cpu_usage.cpu`, `system_memory.used`, `websocket_connections` | every second |
 | `moonraker.system.<field>` | host description, for example `cpu_info.model`, `distribution.name` | once per connection |
+| `moonraker.history.<field>` | job totals: `total_jobs`, `total_print_time`, `total_filament_used`, `longest_print` | after each job |
+| `moonraker.queue.<field>` | job queue: `queue_state`, `queued_jobs.count`, `queued_jobs.0.filename` | when it changes |
 
 ```json
 { "type": "value", "col": 0, "row": 0, "label": "Pi", "source": "printer",
