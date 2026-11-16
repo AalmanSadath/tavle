@@ -22,7 +22,7 @@ static const char *TAG = "moonraker";
 #define BACKOFF_MIN_MS  2000
 #define BACKOFF_MAX_MS  30000
 
-enum { ID_IDENTIFY = 1, ID_INFO = 2, ID_SUBSCRIBE = 3, ID_METADATA = 4 };
+enum { ID_IDENTIFY = 1, ID_INFO = 2, ID_SUBSCRIBE = 3, ID_METADATA = 4, ID_PROC = 5, ID_SYSTEM = 6 };
 
 /* Values computed here rather than read from Klipper, worked out the way
  * Mainsail does so the two agree. */
@@ -46,9 +46,11 @@ static const char *const DERIVED[D_COUNT] = {
 };
 /* Moonraker's own data, beyond Klipper objects. A group is only asked for
  * when a widget reads one of its paths. */
-enum { G_META, G_COUNT };
+enum { G_META, G_PROC, G_SYSTEM, G_COUNT };
 static const char *const GROUP_PREFIX[G_COUNT] = {
-    [G_META] = "moonraker.meta.",
+    [G_META] = "moonraker.meta.",     /* the printing file's metadata */
+    [G_PROC] = "moonraker.proc.",     /* host stats, pushed every second */
+    [G_SYSTEM] = "moonraker.system.", /* host description, once per connect */
 };
 
 #define THUMB_MIN_W 100 /* smallest thumbnail worth showing in a cell */
@@ -307,6 +309,17 @@ static void request_metadata(mr_t *m)
     cJSON *p = cJSON_CreateObject();
     cJSON_AddStringToObject(p, "filename", m->filename);
     send_json(m, "server.files.metadata", ID_METADATA, p);
+}
+
+/* First values of the wanted groups; later ones arrive as notifications. */
+static void request_groups(mr_t *m)
+{
+    if (m->gwant[G_PROC]) {
+        send_json(m, "machine.proc_stats", ID_PROC, NULL);
+    }
+    if (m->gwant[G_SYSTEM]) {
+        send_json(m, "machine.system_info", ID_SYSTEM, NULL);
+    }
 }
 
 static double num_or(const cJSON *obj, const char *key, double def)
@@ -610,6 +623,12 @@ static void report_status(mr_t *m, const cJSON *status)
 
 static void handle_message(mr_t *m, const char *json, int len)
 {
+    /* Host stats come every second whether asked for or not: drop them
+     * before parsing when no widget reads them. */
+    static const char PROC_NOTE[] = "\"notify_proc_stat_update\"";
+    if (!m->gwant[G_PROC] && memmem(json, len < 80 ? len : 80, PROC_NOTE, sizeof(PROC_NOTE) - 1)) {
+        return;
+    }
     cJSON *msg = cJSON_ParseWithLength(json, len);
     if (!msg) {
         return;
@@ -650,6 +669,7 @@ static void handle_message(mr_t *m, const char *json, int len)
             m->subscribed = true;
             esp_timer_stop(m->retry);
             report_status(m, cJSON_GetObjectItemCaseSensitive(result, "status"));
+            request_groups(m);
             report_state(m, SRC_ONLINE, "");
             ESP_LOGI(TAG, "subscribed to %d paths", m->npaths);
         }
@@ -657,6 +677,12 @@ static void handle_message(mr_t *m, const char *json, int len)
         on_metadata(m, result);
         update_derived(m);
         report_group(m, G_META, result);
+    } else if (cJSON_IsNumber(id) && id->valueint == ID_PROC) {
+        report_group(m, G_PROC, result);
+    } else if (cJSON_IsNumber(id) && id->valueint == ID_SYSTEM) {
+        report_group(m, G_SYSTEM, cJSON_GetObjectItemCaseSensitive(result, "system_info"));
+    } else if (method && strcmp(method, "notify_proc_stat_update") == 0) {
+        report_group(m, G_PROC, cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(msg, "params"), 0));
     } else if (method && strcmp(method, "notify_status_update") == 0) {
         report_status(m, cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(msg, "params"), 0));
     } else if (method && strcmp(method, "notify_klippy_ready") == 0) {
