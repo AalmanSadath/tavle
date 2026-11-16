@@ -135,6 +135,8 @@ device, the same way Mainsail shows them:
 | `tavle.layer` | current layer and layer count, as `12/67` |
 | `tavle.filename` | file name without folder and `.gcode`; a slicer suffix like `_PETG_1h18m` is dropped |
 | `tavle.thumbnail` | address of the file's thumbnail, for an `image` widget |
+| `tavle.filament_used_g` | grams of filament used so far: the slicer's weight for the print, scaled by length used |
+| `tavle.filament_total_g` | grams of filament the slicer planned for the print |
 
 The remaining times and the layer show `--` when nothing is printing. Use
 `"format": "duration"` to show seconds as `1h 23m`, or `23:05` under an hour.
@@ -172,6 +174,41 @@ A graph can draw up to three values of one source:
 
 Widgets show `--` until their first value, and are dimmed while their source
 is offline.
+
+### Moonraker data beyond Klipper
+
+A `moonraker` source also reads Moonraker's own data. Each group below is only
+asked for when a widget uses one of its paths. A path continues into the
+reply with dots; a number picks a list item, and `count` gives a list's
+length.
+
+| path | from | updated |
+|---|---|---|
+| `moonraker.meta.<field>` | the printing file's metadata, for example `filament_name`, `filament_type`, `nozzle_diameter`, `slicer`, `filament_colors.0` | when the file changes |
+| `moonraker.proc.<field>` | host stats, for example `cpu_temp`, `system_cpu_usage.cpu`, `system_memory.used`, `websocket_connections` | every second |
+| `moonraker.system.<field>` | host description, for example `cpu_info.model`, `distribution.name` | once per connection |
+| `moonraker.history.<field>` | job totals: `total_jobs`, `total_print_time`, `total_filament_used`, `longest_print` | after each job |
+| `moonraker.queue.<field>` | job queue: `queue_state`, `queued_jobs.count`, `queued_jobs.0.filename` | when it changes |
+
+```json
+{ "type": "value", "col": 0, "row": 0, "label": "Pi", "source": "printer",
+  "path": "moonraker.proc.cpu_temp", "unit": "°C", "format": "%.0f" }
+```
+
+Any other read-only Moonraker method can be read with
+`rpc:<method>:<field>`, for example `rpc:server.info:klippy_state`. Such
+methods are called every `poll` seconds (a setting of the source, default 60,
+at least 5). Only these methods are allowed, so a layout can never control
+the printer: `printer.info`, `server.info`, `machine.system_info`,
+`machine.proc_stats`, `server.history.totals`, `server.job_queue.status`,
+`machine.update.status`, `machine.device_power.devices`,
+`server.sensors.list`, `server.announcements.list`, `server.webcams.list`.
+A path with another method shows "not allowed", and the setup page names
+the method. Replies over 4 KB are dropped, and the setup page says so.
+
+```json
+"printer": { "type": "moonraker", "host": "printer.local", "port": 7125, "poll": 30 }
+```
 
 ### Clock
 

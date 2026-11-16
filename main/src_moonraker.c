@@ -22,13 +22,15 @@ static const char *TAG = "moonraker";
 #define BACKOFF_MIN_MS  2000
 #define BACKOFF_MAX_MS  30000
 
-enum { ID_IDENTIFY = 1, ID_INFO = 2, ID_SUBSCRIBE = 3, ID_METADATA = 4 };
+enum { ID_IDENTIFY = 1, ID_INFO = 2, ID_SUBSCRIBE = 3, ID_METADATA = 4, ID_PROC = 5, ID_SYSTEM = 6,
+       ID_HISTORY = 7, ID_QUEUE = 8, ID_RPC = 100 /* + method index */ };
 
 /* Values computed here rather than read from Klipper, worked out the way
  * Mainsail does so the two agree. */
 #define DERIVED_PREFIX "tavle."
 enum {
     D_SLICER, D_KLIPPER, D_FILE, D_FILAMENT, D_PROGRESS, D_FILENAME, D_LAYER, D_THUMB,
+    D_USED_G, D_TOTAL_G,
     D_COUNT
 };
 static const char *const DERIVED[D_COUNT] = {
@@ -40,7 +42,34 @@ static const char *const DERIVED[D_COUNT] = {
     [D_FILENAME] = "tavle.filename",
     [D_LAYER] = "tavle.layer",
     [D_THUMB] = "tavle.thumbnail",
+    [D_USED_G] = "tavle.filament_used_g",
+    [D_TOTAL_G] = "tavle.filament_total_g",
 };
+/* Moonraker's own data, beyond Klipper objects. A group is only asked for
+ * when a widget reads one of its paths. */
+enum { G_META, G_PROC, G_SYSTEM, G_HISTORY, G_QUEUE, G_RPC, G_COUNT };
+static const char *const GROUP_PREFIX[G_COUNT] = {
+    [G_META] = "moonraker.meta.",     /* the printing file's metadata */
+    [G_PROC] = "moonraker.proc.",     /* host stats, pushed every second */
+    [G_SYSTEM] = "moonraker.system.", /* host description, once per connect */
+    [G_HISTORY] = "moonraker.history.", /* job totals, again after each job */
+    [G_QUEUE] = "moonraker.queue.",   /* job queue, again when it changes */
+    [G_RPC] = "rpc:",                 /* rpc:<method>:<field>, polled */
+};
+
+/* Methods an rpc: path may call: read-only ones without parameters. The
+ * layout comes from a URL, so nothing that could move, heat or restart the
+ * printer may be reachable from it. */
+static const char *const RPC_ALLOWED[] = {
+    "printer.info", "server.info", "machine.system_info", "machine.proc_stats",
+    "server.history.totals", "server.job_queue.status", "machine.update.status",
+    "machine.device_power.devices", "server.sensors.list", "server.announcements.list",
+    "server.webcams.list",
+};
+#define RPC_MAX       6
+#define RPC_POLL_DEF  60
+#define RPC_POLL_MIN  5
+
 #define THUMB_MIN_W 100 /* smallest thumbnail worth showing in a cell */
 #define THUMB_MAX_W 1024 /* widest the PNG decoder takes */
 
@@ -55,6 +84,7 @@ typedef struct {
 typedef struct {
     double estimated_time;
     double filament_total;
+    double filament_weight; /* grams for the whole print */
     double start_byte, end_byte;
     double layer_count, first_layer_height, layer_height, object_height;
     char thumb[160]; /* path of the chosen thumbnail, below the gcodes root */
@@ -89,6 +119,13 @@ typedef struct {
     char filename[128];
     file_meta_t meta;
     last_t last[D_COUNT];
+    bool gwant[G_COUNT];
+    char rpc[RPC_MAX][40];   /* allowed methods the layout's rpc: paths call */
+    int nrpc;
+    char rpc_refused[40];    /* first method refused, for the status line */
+    esp_timer_handle_t poll; /* calls the rpc methods every poll_s */
+    int poll_s;
+    bool dropped_big;        /* a reply over RX_MAX was dropped */
 } mr_t;
 
 /* Reports go out only while the source runs: stop() may return before the
@@ -123,6 +160,83 @@ static void report_state(mr_t *m, src_state_t state, const char *detail)
 static bool is_derived(const char *path)
 {
     return strncmp(path, DERIVED_PREFIX, strlen(DERIVED_PREFIX)) == 0;
+}
+
+/* The group a path belongs to, or -1 for a Klipper object path. */
+static int group_of(const char *path)
+{
+    for (int g = 0; g < G_COUNT; g++) {
+        if (strncmp(path, GROUP_PREFIX[g], strlen(GROUP_PREFIX[g])) == 0) {
+            return g;
+        }
+    }
+    return -1;
+}
+
+/* Not a Klipper object: computed here or read from a Moonraker call. */
+static bool not_klipper(const char *path)
+{
+    return is_derived(path) || group_of(path) >= 0;
+}
+
+/* Follows a dotted path into JSON: "a.b.0.c" takes list item 0 of b, and a
+ * last segment "count" on a list gives its length. *count_out is set then. */
+static const cJSON *json_at(const cJSON *v, const char *path, double *count_out, bool *is_count)
+{
+    char seg[SRC_PATH_MAX];
+    *is_count = false;
+    while (v && path && *path) {
+        size_t n = strcspn(path, ".");
+        snprintf(seg, sizeof(seg), "%.*s", (int)n, path);
+        const char *next = path[n] ? path + n + 1 : NULL;
+        if (cJSON_IsArray(v)) {
+            if (!next && strcmp(seg, "count") == 0) {
+                *count_out = cJSON_GetArraySize(v);
+                *is_count = true;
+                return v;
+            }
+            char *end;
+            long i = strtol(seg, &end, 10);
+            v = (*end == '\0' && end != seg) ? cJSON_GetArrayItem(v, (int)i) : NULL;
+        } else {
+            v = cJSON_GetObjectItemCaseSensitive(v, seg);
+        }
+        path = next;
+    }
+    return v;
+}
+
+/* Reports path, read from root at path + skip, as a number or text. */
+static void report_json(mr_t *m, const char *path, size_t skip, const cJSON *root)
+{
+    double count;
+    bool is_count;
+    const cJSON *v = json_at(root, path + skip, &count, &is_count);
+    if (is_count) {
+        report_number(m, path, count);
+    } else if (cJSON_IsNumber(v)) {
+        report_number(m, path, v->valuedouble);
+    } else if (cJSON_IsBool(v)) {
+        report_number(m, path, cJSON_IsTrue(v) ? 1 : 0);
+    } else if (cJSON_IsString(v)) {
+        report_text(m, path, v->valuestring);
+    } else {
+        report_text(m, path, "--");
+    }
+}
+
+/* Reports every wanted path of group g from root; root NULL shows "--". */
+static void report_group(mr_t *m, int g, const cJSON *root)
+{
+    if (!m->gwant[g]) {
+        return;
+    }
+    size_t skip = strlen(GROUP_PREFIX[g]);
+    for (int i = 0; i < m->npaths; i++) {
+        if (group_of(m->paths[i]) == g) {
+            report_json(m, m->paths[i], skip, root);
+        }
+    }
 }
 
 static void send_json(mr_t *m, const char *method, int id, cJSON *params)
@@ -173,7 +287,7 @@ static void subscribe(mr_t *m)
     for (int i = 0; i < total; i++) {
         const char *path = i < m->npaths ? m->paths[i] : inputs[i - m->npaths];
         const char *rest;
-        if (is_derived(path) || !split_path(path, obj, sizeof(obj), &rest)) {
+        if (not_klipper(path) || !split_path(path, obj, sizeof(obj), &rest)) {
             continue;
         }
         cJSON *fields = cJSON_GetObjectItemCaseSensitive(objects, obj);
@@ -212,11 +326,90 @@ static void request_metadata(mr_t *m)
 {
     memset(&m->meta, 0, sizeof(m->meta));
     if (!m->filename[0]) {
+        report_group(m, G_META, NULL);
         return;
     }
     cJSON *p = cJSON_CreateObject();
     cJSON_AddStringToObject(p, "filename", m->filename);
     send_json(m, "server.files.metadata", ID_METADATA, p);
+}
+
+/* "rpc:server.info:klippy_state" -> method "server.info", field after it. */
+static bool rpc_split(const char *path, char *method, size_t len, size_t *skip)
+{
+    const char *start = path + strlen(GROUP_PREFIX[G_RPC]);
+    const char *colon = strchr(start, ':');
+    if (!colon || colon == start || (size_t)(colon - start) >= len) {
+        return false;
+    }
+    snprintf(method, len, "%.*s", (int)(colon - start), start);
+    *skip = colon + 1 - path;
+    return true;
+}
+
+static bool rpc_allowed(const char *method)
+{
+    for (size_t i = 0; i < sizeof(RPC_ALLOWED) / sizeof(RPC_ALLOWED[0]); i++) {
+        if (strcmp(method, RPC_ALLOWED[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void send_rpcs(mr_t *m)
+{
+    for (int k = 0; k < m->nrpc; k++) {
+        send_json(m, m->rpc[k], ID_RPC + k, NULL);
+    }
+}
+
+/* A reply to rpc method k: every path calling it reads its field. */
+static void on_rpc_reply(mr_t *m, int k, const cJSON *result)
+{
+    char method[40];
+    size_t skip;
+    for (int i = 0; i < m->npaths; i++) {
+        if (group_of(m->paths[i]) == G_RPC && rpc_split(m->paths[i], method, sizeof(method), &skip) &&
+            strcmp(method, m->rpc[k]) == 0) {
+            report_json(m, m->paths[i], skip, result);
+        }
+    }
+}
+
+static void on_poll(void *arg)
+{
+    mr_t *m = arg;
+    if (m->subscribed && esp_websocket_client_is_connected(m->ws)) {
+        send_rpcs(m);
+    }
+}
+
+/* First values of the wanted groups; later ones arrive as notifications. */
+static void request_groups(mr_t *m)
+{
+    if (m->gwant[G_PROC]) {
+        send_json(m, "machine.proc_stats", ID_PROC, NULL);
+    }
+    if (m->gwant[G_SYSTEM]) {
+        send_json(m, "machine.system_info", ID_SYSTEM, NULL);
+    }
+    if (m->gwant[G_HISTORY]) {
+        send_json(m, "server.history.totals", ID_HISTORY, NULL);
+    }
+    if (m->gwant[G_QUEUE]) {
+        send_json(m, "server.job_queue.status", ID_QUEUE, NULL);
+    }
+    send_rpcs(m);
+    /* paths calling a refused method say so instead of staying "--" */
+    char method[40];
+    size_t skip;
+    for (int i = 0; m->rpc_refused[0] && i < m->npaths; i++) {
+        if (group_of(m->paths[i]) == G_RPC && rpc_split(m->paths[i], method, sizeof(method), &skip) &&
+            !rpc_allowed(method)) {
+            report_text(m, m->paths[i], "not allowed");
+        }
+    }
 }
 
 static double num_or(const cJSON *obj, const char *key, double def)
@@ -260,6 +453,7 @@ static void on_metadata(mr_t *m, const cJSON *r)
     file_meta_t *f = &m->meta;
     f->estimated_time = num_or(r, "estimated_time", 0);
     f->filament_total = num_or(r, "filament_total", 0);
+    f->filament_weight = num_or(r, "filament_weight_total", 0);
     f->start_byte = num_or(r, "gcode_start_byte", 0);
     f->end_byte = num_or(r, "gcode_end_byte", 0);
     f->layer_count = num_or(r, "layer_count", 0);
@@ -455,6 +649,12 @@ static void update_derived(mr_t *m)
     emit_num_or_none(m, D_KLIPPER, nest > 0, nest ? (file_est + fil_est) / nest : 0);
     emit(m, D_PROGRESS, true, fp, NULL);
 
+    /* grams: the slicer's weight for the print, scaled by length used */
+    bool g_ok = m->filename[0] && m->meta.filament_weight > 0;
+    emit_num_or_none(m, D_TOTAL_G, g_ok, m->meta.filament_weight);
+    emit_num_or_none(m, D_USED_G, g_ok && m->meta.filament_total > 0,
+                     m->meta.filament_weight * m->filament_used / m->meta.filament_total);
+
     char buf[SRC_TEXT_MAX];
     const char *base = strrchr(m->filename, '/');
     strlcpy(buf, base ? base + 1 : m->filename, sizeof(buf));
@@ -487,23 +687,21 @@ static void report_status(mr_t *m, const cJSON *status)
         take_inputs(m, status);
         update_derived(m);
     }
-    char obj[SRC_PATH_MAX], seg[SRC_PATH_MAX];
+    char obj[SRC_PATH_MAX];
     for (int i = 0; i < m->npaths; i++) {
         const char *rest;
-        if (!split_path(m->paths[i], obj, sizeof(obj), &rest) || !rest) {
+        if (not_klipper(m->paths[i]) || !split_path(m->paths[i], obj, sizeof(obj), &rest) ||
+            !rest) {
             continue;
         }
-        const cJSON *v = cJSON_GetObjectItemCaseSensitive(status, obj);
-        while (v && rest && *rest) {
-            size_t n = strcspn(rest, ".");
-            snprintf(seg, sizeof(seg), "%.*s", (int)n, rest);
-            v = cJSON_GetObjectItemCaseSensitive(v, seg);
-            rest = rest[n] ? rest + n + 1 : NULL;
-        }
-        if (!v) {
-            continue;
-        }
-        if (cJSON_IsNumber(v)) {
+        /* an update only carries what changed: skip paths it does not hold */
+        double count;
+        bool is_count;
+        const cJSON *v = json_at(cJSON_GetObjectItemCaseSensitive(status, obj), rest, &count,
+                                 &is_count);
+        if (is_count) {
+            report_number(m, m->paths[i], count);
+        } else if (cJSON_IsNumber(v)) {
             report_number(m, m->paths[i], v->valuedouble);
         } else if (cJSON_IsBool(v)) {
             report_number(m, m->paths[i], cJSON_IsTrue(v) ? 1 : 0);
@@ -515,6 +713,12 @@ static void report_status(mr_t *m, const cJSON *status)
 
 static void handle_message(mr_t *m, const char *json, int len)
 {
+    /* Host stats come every second whether asked for or not: drop them
+     * before parsing when no widget reads them. */
+    static const char PROC_NOTE[] = "\"notify_proc_stat_update\"";
+    if (!m->gwant[G_PROC] && memmem(json, len < 80 ? len : 80, PROC_NOTE, sizeof(PROC_NOTE) - 1)) {
+        return;
+    }
     cJSON *msg = cJSON_ParseWithLength(json, len);
     if (!msg) {
         return;
@@ -555,12 +759,38 @@ static void handle_message(mr_t *m, const char *json, int len)
             m->subscribed = true;
             esp_timer_stop(m->retry);
             report_status(m, cJSON_GetObjectItemCaseSensitive(result, "status"));
-            report_state(m, SRC_ONLINE, "");
+            request_groups(m);
+            char d[64] = "";
+            if (m->rpc_refused[0]) {
+                snprintf(d, sizeof(d), "rpc method %.32s not allowed", m->rpc_refused);
+            }
+            report_state(m, SRC_ONLINE, d);
             ESP_LOGI(TAG, "subscribed to %d paths", m->npaths);
         }
     } else if (cJSON_IsNumber(id) && id->valueint == ID_METADATA) {
         on_metadata(m, result);
         update_derived(m);
+        report_group(m, G_META, result);
+    } else if (cJSON_IsNumber(id) && id->valueint == ID_PROC) {
+        report_group(m, G_PROC, result);
+    } else if (cJSON_IsNumber(id) && id->valueint == ID_SYSTEM) {
+        report_group(m, G_SYSTEM, cJSON_GetObjectItemCaseSensitive(result, "system_info"));
+    } else if (cJSON_IsNumber(id) && id->valueint >= ID_RPC && id->valueint < ID_RPC + m->nrpc) {
+        on_rpc_reply(m, id->valueint - ID_RPC, result); /* an error reply shows "--" */
+    } else if (cJSON_IsNumber(id) && id->valueint == ID_HISTORY) {
+        report_group(m, G_HISTORY, cJSON_GetObjectItemCaseSensitive(result, "job_totals"));
+    } else if (cJSON_IsNumber(id) && id->valueint == ID_QUEUE) {
+        report_group(m, G_QUEUE, result);
+    } else if (method && strcmp(method, "notify_history_changed") == 0) {
+        if (m->gwant[G_HISTORY]) {
+            send_json(m, "server.history.totals", ID_HISTORY, NULL); /* a job was added or finished */
+        }
+    } else if (method && strcmp(method, "notify_job_queue_changed") == 0) {
+        if (m->gwant[G_QUEUE]) {
+            send_json(m, "server.job_queue.status", ID_QUEUE, NULL);
+        }
+    } else if (method && strcmp(method, "notify_proc_stat_update") == 0) {
+        report_group(m, G_PROC, cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(msg, "params"), 0));
     } else if (method && strcmp(method, "notify_status_update") == 0) {
         report_status(m, cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(msg, "params"), 0));
     } else if (method && strcmp(method, "notify_klippy_ready") == 0) {
@@ -647,6 +877,10 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *even
             m->rx_skip = e->payload_len > RX_MAX;
             if (m->rx_skip) {
                 ESP_LOGW(TAG, "message of %d bytes dropped", e->payload_len);
+                if (!m->dropped_big && m->subscribed) {
+                    m->dropped_big = true; /* most likely an rpc: reply */
+                    report_state(m, SRC_ONLINE, "a reply over 4 KB was dropped");
+                }
             }
         }
         if (m->rx_skip || e->payload_offset + e->data_len > RX_MAX) {
@@ -722,12 +956,49 @@ static void *mr_start(int index, const cJSON *config, const char *const *paths, 
                 m->want[d] = m->want_any = true;
             }
         }
+        int g = group_of(paths[i]);
+        if (g >= 0) {
+            m->gwant[g] = true;
+            /* metadata comes with the file name */
+            m->want_any |= g == G_META;
+        }
+        char method[40];
+        size_t skip;
+        if (g == G_RPC && rpc_split(paths[i], method, sizeof(method), &skip)) {
+            bool known = false;
+            for (int k = 0; k < m->nrpc; k++) {
+                known |= strcmp(m->rpc[k], method) == 0;
+            }
+            if (known) {
+                /* already called */
+            } else if (!rpc_allowed(method)) {
+                ESP_LOGW(TAG, "source %d: rpc method %s not allowed", index, method);
+                if (!m->rpc_refused[0]) {
+                    strlcpy(m->rpc_refused, method, sizeof(m->rpc_refused));
+                }
+            } else if (m->nrpc < RPC_MAX) {
+                strlcpy(m->rpc[m->nrpc++], method, sizeof(m->rpc[0]));
+            }
+        }
     }
 
     const esp_timer_create_args_t t = {.callback = on_retry, .arg = m, .name = "mr_retry"};
     if (esp_timer_create(&t, &m->retry) != ESP_OK) {
         mr_stop(m);
         return NULL;
+    }
+    if (m->nrpc) {
+        const cJSON *poll = cJSON_GetObjectItemCaseSensitive(config, "poll");
+        m->poll_s = cJSON_IsNumber(poll) ? poll->valueint : RPC_POLL_DEF;
+        if (m->poll_s < RPC_POLL_MIN) {
+            m->poll_s = RPC_POLL_MIN;
+        }
+        const esp_timer_create_args_t pt = {.callback = on_poll, .arg = m, .name = "mr_poll"};
+        if (esp_timer_create(&pt, &m->poll) != ESP_OK ||
+            esp_timer_start_periodic(m->poll, m->poll_s * 1000000LL) != ESP_OK) {
+            mr_stop(m);
+            return NULL;
+        }
     }
 
     const esp_websocket_client_config_t cfg = {
@@ -771,6 +1042,10 @@ static void destroy(mr_t *m)
         esp_timer_stop(m->retry);
         esp_timer_delete(m->retry);
     }
+    if (m->poll) {
+        esp_timer_stop(m->poll);
+        esp_timer_delete(m->poll);
+    }
     for (int i = 0; i < m->npaths; i++) {
         free(m->paths[i]);
     }
@@ -805,6 +1080,9 @@ static void mr_stop(void *ctx)
     xSemaphoreGive(m->lock);
     if (m->retry) {
         esp_timer_stop(m->retry);
+    }
+    if (m->poll) {
+        esp_timer_stop(m->poll);
     }
     m->waiter = xTaskGetCurrentTaskHandle();
     xTaskNotifyStateClear(NULL);
