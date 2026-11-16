@@ -195,6 +195,21 @@ length.
   "path": "moonraker.proc.cpu_temp", "unit": "°C", "format": "%.0f" }
 ```
 
+Any other read-only Moonraker method can be read with
+`rpc:<method>:<field>`, for example `rpc:server.info:klippy_state`. Such
+methods are called every `poll` seconds (a setting of the source, default 60,
+at least 5). Only these methods are allowed, so a layout can never control
+the printer: `printer.info`, `server.info`, `machine.system_info`,
+`machine.proc_stats`, `server.history.totals`, `server.job_queue.status`,
+`machine.update.status`, `machine.device_power.devices`,
+`server.sensors.list`, `server.announcements.list`, `server.webcams.list`.
+A path with another method shows "not allowed", and the setup page names
+the method. Replies over 4 KB are dropped, and the setup page says so.
+
+```json
+"printer": { "type": "moonraker", "host": "printer.local", "port": 7125, "poll": 30 }
+```
+
 ### Clock
 
 The clock gets the time from `pool.ntp.org`. Set the time zone on the setup

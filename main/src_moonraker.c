@@ -23,7 +23,7 @@ static const char *TAG = "moonraker";
 #define BACKOFF_MAX_MS  30000
 
 enum { ID_IDENTIFY = 1, ID_INFO = 2, ID_SUBSCRIBE = 3, ID_METADATA = 4, ID_PROC = 5, ID_SYSTEM = 6,
-       ID_HISTORY = 7, ID_QUEUE = 8 };
+       ID_HISTORY = 7, ID_QUEUE = 8, ID_RPC = 100 /* + method index */ };
 
 /* Values computed here rather than read from Klipper, worked out the way
  * Mainsail does so the two agree. */
@@ -47,14 +47,28 @@ static const char *const DERIVED[D_COUNT] = {
 };
 /* Moonraker's own data, beyond Klipper objects. A group is only asked for
  * when a widget reads one of its paths. */
-enum { G_META, G_PROC, G_SYSTEM, G_HISTORY, G_QUEUE, G_COUNT };
+enum { G_META, G_PROC, G_SYSTEM, G_HISTORY, G_QUEUE, G_RPC, G_COUNT };
 static const char *const GROUP_PREFIX[G_COUNT] = {
     [G_META] = "moonraker.meta.",     /* the printing file's metadata */
     [G_PROC] = "moonraker.proc.",     /* host stats, pushed every second */
     [G_SYSTEM] = "moonraker.system.", /* host description, once per connect */
     [G_HISTORY] = "moonraker.history.", /* job totals, again after each job */
     [G_QUEUE] = "moonraker.queue.",   /* job queue, again when it changes */
+    [G_RPC] = "rpc:",                 /* rpc:<method>:<field>, polled */
 };
+
+/* Methods an rpc: path may call: read-only ones without parameters. The
+ * layout comes from a URL, so nothing that could move, heat or restart the
+ * printer may be reachable from it. */
+static const char *const RPC_ALLOWED[] = {
+    "printer.info", "server.info", "machine.system_info", "machine.proc_stats",
+    "server.history.totals", "server.job_queue.status", "machine.update.status",
+    "machine.device_power.devices", "server.sensors.list", "server.announcements.list",
+    "server.webcams.list",
+};
+#define RPC_MAX       6
+#define RPC_POLL_DEF  60
+#define RPC_POLL_MIN  5
 
 #define THUMB_MIN_W 100 /* smallest thumbnail worth showing in a cell */
 #define THUMB_MAX_W 1024 /* widest the PNG decoder takes */
@@ -106,6 +120,12 @@ typedef struct {
     file_meta_t meta;
     last_t last[D_COUNT];
     bool gwant[G_COUNT];
+    char rpc[RPC_MAX][40];   /* allowed methods the layout's rpc: paths call */
+    int nrpc;
+    char rpc_refused[40];    /* first method refused, for the status line */
+    esp_timer_handle_t poll; /* calls the rpc methods every poll_s */
+    int poll_s;
+    bool dropped_big;        /* a reply over RX_MAX was dropped */
 } mr_t;
 
 /* Reports go out only while the source runs: stop() may return before the
@@ -314,6 +334,57 @@ static void request_metadata(mr_t *m)
     send_json(m, "server.files.metadata", ID_METADATA, p);
 }
 
+/* "rpc:server.info:klippy_state" -> method "server.info", field after it. */
+static bool rpc_split(const char *path, char *method, size_t len, size_t *skip)
+{
+    const char *start = path + strlen(GROUP_PREFIX[G_RPC]);
+    const char *colon = strchr(start, ':');
+    if (!colon || colon == start || (size_t)(colon - start) >= len) {
+        return false;
+    }
+    snprintf(method, len, "%.*s", (int)(colon - start), start);
+    *skip = colon + 1 - path;
+    return true;
+}
+
+static bool rpc_allowed(const char *method)
+{
+    for (size_t i = 0; i < sizeof(RPC_ALLOWED) / sizeof(RPC_ALLOWED[0]); i++) {
+        if (strcmp(method, RPC_ALLOWED[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void send_rpcs(mr_t *m)
+{
+    for (int k = 0; k < m->nrpc; k++) {
+        send_json(m, m->rpc[k], ID_RPC + k, NULL);
+    }
+}
+
+/* A reply to rpc method k: every path calling it reads its field. */
+static void on_rpc_reply(mr_t *m, int k, const cJSON *result)
+{
+    char method[40];
+    size_t skip;
+    for (int i = 0; i < m->npaths; i++) {
+        if (group_of(m->paths[i]) == G_RPC && rpc_split(m->paths[i], method, sizeof(method), &skip) &&
+            strcmp(method, m->rpc[k]) == 0) {
+            report_json(m, m->paths[i], skip, result);
+        }
+    }
+}
+
+static void on_poll(void *arg)
+{
+    mr_t *m = arg;
+    if (m->subscribed && esp_websocket_client_is_connected(m->ws)) {
+        send_rpcs(m);
+    }
+}
+
 /* First values of the wanted groups; later ones arrive as notifications. */
 static void request_groups(mr_t *m)
 {
@@ -328,6 +399,16 @@ static void request_groups(mr_t *m)
     }
     if (m->gwant[G_QUEUE]) {
         send_json(m, "server.job_queue.status", ID_QUEUE, NULL);
+    }
+    send_rpcs(m);
+    /* paths calling a refused method say so instead of staying "--" */
+    char method[40];
+    size_t skip;
+    for (int i = 0; m->rpc_refused[0] && i < m->npaths; i++) {
+        if (group_of(m->paths[i]) == G_RPC && rpc_split(m->paths[i], method, sizeof(method), &skip) &&
+            !rpc_allowed(method)) {
+            report_text(m, m->paths[i], "not allowed");
+        }
     }
 }
 
@@ -679,7 +760,11 @@ static void handle_message(mr_t *m, const char *json, int len)
             esp_timer_stop(m->retry);
             report_status(m, cJSON_GetObjectItemCaseSensitive(result, "status"));
             request_groups(m);
-            report_state(m, SRC_ONLINE, "");
+            char d[64] = "";
+            if (m->rpc_refused[0]) {
+                snprintf(d, sizeof(d), "rpc method %.32s not allowed", m->rpc_refused);
+            }
+            report_state(m, SRC_ONLINE, d);
             ESP_LOGI(TAG, "subscribed to %d paths", m->npaths);
         }
     } else if (cJSON_IsNumber(id) && id->valueint == ID_METADATA) {
@@ -690,6 +775,8 @@ static void handle_message(mr_t *m, const char *json, int len)
         report_group(m, G_PROC, result);
     } else if (cJSON_IsNumber(id) && id->valueint == ID_SYSTEM) {
         report_group(m, G_SYSTEM, cJSON_GetObjectItemCaseSensitive(result, "system_info"));
+    } else if (cJSON_IsNumber(id) && id->valueint >= ID_RPC && id->valueint < ID_RPC + m->nrpc) {
+        on_rpc_reply(m, id->valueint - ID_RPC, result); /* an error reply shows "--" */
     } else if (cJSON_IsNumber(id) && id->valueint == ID_HISTORY) {
         report_group(m, G_HISTORY, cJSON_GetObjectItemCaseSensitive(result, "job_totals"));
     } else if (cJSON_IsNumber(id) && id->valueint == ID_QUEUE) {
@@ -790,6 +877,10 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *even
             m->rx_skip = e->payload_len > RX_MAX;
             if (m->rx_skip) {
                 ESP_LOGW(TAG, "message of %d bytes dropped", e->payload_len);
+                if (!m->dropped_big && m->subscribed) {
+                    m->dropped_big = true; /* most likely an rpc: reply */
+                    report_state(m, SRC_ONLINE, "a reply over 4 KB was dropped");
+                }
             }
         }
         if (m->rx_skip || e->payload_offset + e->data_len > RX_MAX) {
@@ -871,12 +962,43 @@ static void *mr_start(int index, const cJSON *config, const char *const *paths, 
             /* metadata comes with the file name */
             m->want_any |= g == G_META;
         }
+        char method[40];
+        size_t skip;
+        if (g == G_RPC && rpc_split(paths[i], method, sizeof(method), &skip)) {
+            bool known = false;
+            for (int k = 0; k < m->nrpc; k++) {
+                known |= strcmp(m->rpc[k], method) == 0;
+            }
+            if (known) {
+                /* already called */
+            } else if (!rpc_allowed(method)) {
+                ESP_LOGW(TAG, "source %d: rpc method %s not allowed", index, method);
+                if (!m->rpc_refused[0]) {
+                    strlcpy(m->rpc_refused, method, sizeof(m->rpc_refused));
+                }
+            } else if (m->nrpc < RPC_MAX) {
+                strlcpy(m->rpc[m->nrpc++], method, sizeof(m->rpc[0]));
+            }
+        }
     }
 
     const esp_timer_create_args_t t = {.callback = on_retry, .arg = m, .name = "mr_retry"};
     if (esp_timer_create(&t, &m->retry) != ESP_OK) {
         mr_stop(m);
         return NULL;
+    }
+    if (m->nrpc) {
+        const cJSON *poll = cJSON_GetObjectItemCaseSensitive(config, "poll");
+        m->poll_s = cJSON_IsNumber(poll) ? poll->valueint : RPC_POLL_DEF;
+        if (m->poll_s < RPC_POLL_MIN) {
+            m->poll_s = RPC_POLL_MIN;
+        }
+        const esp_timer_create_args_t pt = {.callback = on_poll, .arg = m, .name = "mr_poll"};
+        if (esp_timer_create(&pt, &m->poll) != ESP_OK ||
+            esp_timer_start_periodic(m->poll, m->poll_s * 1000000LL) != ESP_OK) {
+            mr_stop(m);
+            return NULL;
+        }
     }
 
     const esp_websocket_client_config_t cfg = {
@@ -920,6 +1042,10 @@ static void destroy(mr_t *m)
         esp_timer_stop(m->retry);
         esp_timer_delete(m->retry);
     }
+    if (m->poll) {
+        esp_timer_stop(m->poll);
+        esp_timer_delete(m->poll);
+    }
     for (int i = 0; i < m->npaths; i++) {
         free(m->paths[i]);
     }
@@ -954,6 +1080,9 @@ static void mr_stop(void *ctx)
     xSemaphoreGive(m->lock);
     if (m->retry) {
         esp_timer_stop(m->retry);
+    }
+    if (m->poll) {
+        esp_timer_stop(m->poll);
     }
     m->waiter = xTaskGetCurrentTaskHandle();
     xTaskNotifyStateClear(NULL);
