@@ -44,6 +44,7 @@ typedef struct {
     uint32_t line_len; /* filter byte + w * bpp */
     uint8_t pal[256 * 3];
     uint8_t alpha[256];
+    bool has_trns;
 
     /* inflate */
     uint8_t *window;
@@ -55,7 +56,12 @@ typedef struct {
     uint32_t line_pos;
     uint32_t y;
 
-    /* output */
+    /* box mode: only find the visible part, in fx0..fy1 */
+    bool box_mode;
+    uint32_t fx0, fy0, fx1, fy1;
+
+    /* output: the part bx0..by1 of the source, scaled to ow x oh */
+    uint32_t bx0, by0, bx1, by1;
     int ow, oh;
     int acc_row;
     uint32_t *acc; /* r, g, b, count per output column */
@@ -136,6 +142,7 @@ static void other_chunk(dec_t *d, uint32_t type, uint32_t len)
     } else if (type == TYPE('t', 'R', 'N', 'S') && d->ctype == C_PALETTE &&
                len <= sizeof(d->alpha)) {
         raw_read(d, d->alpha, len);
+        d->has_trns = true;
     } else if (type == TYPE('I', 'E', 'N', 'D')) {
         fail(d, "incomplete image");
     } else {
@@ -218,31 +225,77 @@ static void flush_row(dec_t *d)
     memset(d->acc, 0, (size_t)d->ow * 4 * sizeof(uint32_t));
 }
 
-/* Box filter: every source pixel adds to the output pixel it falls in.
- * Transparent pixels are blended onto the background first. */
+static uint32_t alpha_at(const dec_t *d, const uint8_t *s)
+{
+    switch (d->ctype) {
+    case C_GREY_ALPHA: return s[1];
+    case C_RGBA: return s[3];
+    case C_PALETTE: return d->alpha[s[0]];
+    default: return 255;
+    }
+}
+
+/* Box mode: widen the found box by this row's visible pixels. */
+static void find_row(dec_t *d)
+{
+    const uint8_t *row = d->cur + 1;
+    uint32_t first = d->w, last = 0;
+    for (uint32_t x = 0; x < d->w; x++) {
+        if (alpha_at(d, row + x * d->bpp)) {
+            first = x;
+            break;
+        }
+    }
+    if (first == d->w) {
+        return;
+    }
+    for (uint32_t x = d->w; x-- > first;) {
+        if (alpha_at(d, row + x * d->bpp)) {
+            last = x;
+            break;
+        }
+    }
+    if (d->fx1 <= d->fx0) { /* first visible row */
+        d->fx0 = first;
+        d->fx1 = last + 1;
+        d->fy0 = d->y;
+    } else {
+        d->fx0 = first < d->fx0 ? first : d->fx0;
+        d->fx1 = last + 1 > d->fx1 ? last + 1 : d->fx1;
+    }
+    d->fy1 = d->y + 1;
+}
+
+/* Box filter: every source pixel inside the box adds to the output pixel it
+ * falls in. Transparent pixels are blended onto the background first. */
 static void take_row(dec_t *d)
 {
-    int oy = (int)((uint64_t)d->y * d->oh / d->h);
+    if (d->box_mode) {
+        find_row(d);
+        return;
+    }
+    if (d->y < d->by0 || d->y >= d->by1) {
+        return;
+    }
+    uint32_t bw = d->bx1 - d->bx0, bh = d->by1 - d->by0;
+    int oy = (int)((uint64_t)(d->y - d->by0) * d->oh / bh);
     if (oy != d->acc_row) {
         flush_row(d);
         d->acc_row = oy;
     }
-    const uint8_t *s = d->cur + 1;
-    for (uint32_t x = 0; x < d->w; x++, s += d->bpp) {
-        uint32_t c[3], a = 255;
+    const uint8_t *s = d->cur + 1 + d->bx0 * d->bpp;
+    for (uint32_t x = 0; x < bw; x++, s += d->bpp) {
+        uint32_t c[3], a = alpha_at(d, s);
         switch (d->ctype) {
-        case C_GREY: c[0] = c[1] = c[2] = s[0]; break;
-        case C_GREY_ALPHA: c[0] = c[1] = c[2] = s[0]; a = s[1]; break;
-        case C_RGB: c[0] = s[0]; c[1] = s[1]; c[2] = s[2]; break;
-        case C_RGBA: c[0] = s[0]; c[1] = s[1]; c[2] = s[2]; a = s[3]; break;
+        case C_GREY: case C_GREY_ALPHA: c[0] = c[1] = c[2] = s[0]; break;
+        case C_RGB: case C_RGBA: c[0] = s[0]; c[1] = s[1]; c[2] = s[2]; break;
         default: /* palette */
             c[0] = d->pal[s[0] * 3];
             c[1] = d->pal[s[0] * 3 + 1];
             c[2] = d->pal[s[0] * 3 + 2];
-            a = d->alpha[s[0]];
             break;
         }
-        uint32_t *acc = d->acc + (uint32_t)((uint64_t)x * d->ow / d->w) * 4;
+        uint32_t *acc = d->acc + (uint32_t)((uint64_t)x * d->ow / bw) * 4;
         for (int k = 0; k < 3; k++) {
             if (a != 255) {
                 c[k] = (c[k] * a + d->bg[k] * (255 - a) + 127) / 255;
@@ -521,23 +574,40 @@ static void read_header(dec_t *d)
 
 static void setup_output(dec_t *d)
 {
+    d->cur = malloc(d->line_len);
+    d->prev = calloc(1, d->line_len);
+    if (d->box_mode) {
+        if (!d->cur || !d->prev) {
+            fail(d, "out of memory");
+        }
+        return;
+    }
+
+    /* the box, cut to the picture; an empty one means all of it */
+    d->bx1 = d->bx1 < d->w ? d->bx1 : d->w;
+    d->by1 = d->by1 < d->h ? d->by1 : d->h;
+    if (d->bx0 >= d->bx1 || d->by0 >= d->by1) {
+        d->bx0 = d->by0 = 0;
+        d->bx1 = d->w;
+        d->by1 = d->h;
+    }
+    uint32_t bw = d->bx1 - d->bx0, bh = d->by1 - d->by0;
+
     /* fit inside max_w x max_h, keep the shape, never enlarge */
-    d->ow = d->w;
-    d->oh = d->h;
+    d->ow = bw;
+    d->oh = bh;
     if (d->ow > d->max_w || d->oh > d->max_h) {
-        if ((uint64_t)d->w * d->max_h > (uint64_t)d->h * d->max_w) {
+        if ((uint64_t)bw * d->max_h > (uint64_t)bh * d->max_w) {
             d->ow = d->max_w;
-            d->oh = (int)((uint64_t)d->h * d->max_w / d->w);
+            d->oh = (int)((uint64_t)bh * d->max_w / bw);
         } else {
             d->oh = d->max_h;
-            d->ow = (int)((uint64_t)d->w * d->max_h / d->h);
+            d->ow = (int)((uint64_t)bw * d->max_h / bh);
         }
         d->ow = d->ow < 1 ? 1 : d->ow;
         d->oh = d->oh < 1 ? 1 : d->oh;
     }
 
-    d->cur = malloc(d->line_len);
-    d->prev = calloc(1, d->line_len);
     d->acc = calloc((size_t)d->ow * 4, sizeof(uint32_t));
     d->pic = calloc(1, sizeof(*d->pic));
     if (!d->cur || !d->prev || !d->acc || !d->pic) {
@@ -565,12 +635,34 @@ static void setup_output(dec_t *d)
 
 /* ---- entry ------------------------------------------------------------- */
 
-png_picture_t *png_decode(png_read_fn read, void *ctx, int max_w, int max_h, uint32_t bg,
-                          const char **error)
+/* Runs one decode, in box mode or not, on a prepared d. True when done. */
+static bool run(dec_t *d)
+{
+    if (setjmp(d->fail) == 0) {
+        read_header(d);
+        if (d->box_mode && (d->ctype == C_GREY || d->ctype == C_RGB ||
+                            (d->ctype == C_PALETTE && !d->has_trns))) {
+            d->done = true; /* nothing can be transparent */
+            return true;
+        }
+        setup_output(d);
+        inflate_all(d);
+        if (d->y < d->h) {
+            fail(d, "incomplete image");
+        }
+        if (!d->box_mode) {
+            flush_row(d);
+        }
+        d->done = true; /* in the struct: locals may not survive longjmp */
+    }
+    return d->done;
+}
+
+static dec_t *new_dec(png_read_fn read, void *ctx, const char **error)
 {
     dec_t *d = calloc(1, sizeof(*d));
     uint8_t *window = malloc(WINDOW);
-    if (!d || !window || max_w < 1 || max_h < 1) {
+    if (!d || !window) {
         free(d);
         free(window);
         *error = "out of memory";
@@ -579,36 +671,71 @@ png_picture_t *png_decode(png_read_fn read, void *ctx, int max_w, int max_h, uin
     d->read = read;
     d->ctx = ctx;
     d->window = window;
-    d->max_w = max_w;
-    d->max_h = max_h;
-    d->bg[0] = bg >> 16;
-    d->bg[1] = bg >> 8;
-    d->bg[2] = bg;
     memset(d->alpha, 0xff, sizeof(d->alpha));
     d->acc_row = -1;
+    return d;
+}
 
-    bool ok = false;
-    if (setjmp(d->fail) == 0) {
-        read_header(d);
-        setup_output(d);
-        inflate_all(d);
-        if (d->y < d->h) {
-            fail(d, "incomplete image");
-        }
-        flush_row(d);
-        d->done = true; /* in the struct: locals may not survive longjmp */
-    } else {
-        *error = d->error;
-    }
-    ok = d->done;
-    png_picture_t *pic = ok ? d->pic : NULL;
-    if (!ok) {
-        png_picture_free(d->pic);
-    }
+static void free_dec(dec_t *d)
+{
     free(d->cur);
     free(d->prev);
     free(d->acc);
     free(d->window);
     free(d);
+}
+
+png_picture_t *png_decode(png_read_fn read, void *ctx, int max_w, int max_h, uint32_t bg,
+                          const png_box_t *box, const char **error)
+{
+    if (max_w < 1 || max_h < 1) {
+        *error = "out of memory";
+        return NULL;
+    }
+    dec_t *d = new_dec(read, ctx, error);
+    if (!d) {
+        return NULL;
+    }
+    d->max_w = max_w;
+    d->max_h = max_h;
+    d->bg[0] = bg >> 16;
+    d->bg[1] = bg >> 8;
+    d->bg[2] = bg;
+    if (box && box->x0 >= 0 && box->y0 >= 0 && box->x1 > box->x0 && box->y1 > box->y0) {
+        d->bx0 = box->x0;
+        d->by0 = box->y0;
+        d->bx1 = box->x1;
+        d->by1 = box->y1;
+    } /* else all zero: the whole picture */
+
+    png_picture_t *pic = NULL;
+    if (run(d)) {
+        pic = d->pic;
+    } else {
+        *error = d->error;
+        png_picture_free(d->pic);
+    }
+    free_dec(d);
     return pic;
+}
+
+bool png_alpha_box(png_read_fn read, void *ctx, png_box_t *out, const char **error)
+{
+    dec_t *d = new_dec(read, ctx, error);
+    if (!d) {
+        return false;
+    }
+    d->box_mode = true;
+    bool ok = run(d);
+    if (ok) {
+        if (d->fx1 > d->fx0) {
+            *out = (png_box_t){(int)d->fx0, (int)d->fy0, (int)d->fx1, (int)d->fy1};
+        } else {
+            *out = (png_box_t){0, 0, (int)d->w, (int)d->h};
+        }
+    } else {
+        *error = d->error;
+    }
+    free_dec(d);
+    return ok;
 }

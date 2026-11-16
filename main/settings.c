@@ -59,6 +59,10 @@ esp_err_t settings_init(void)
         load_str(h, "wifi_pass", s_cur.wifi_pass, sizeof(s_cur.wifi_pass));
         load_str(h, "layout_url", s_cur.layout_url, sizeof(s_cur.layout_url));
         load_str(h, "tz", s_cur.tz, sizeof(s_cur.tz));
+        load_str(h, "host_base", s_cur.hostname, sizeof(s_cur.hostname));
+        if (!settings_valid_hostname(s_cur.hostname)) {
+            s_cur.hostname[0] = '\0';
+        }
         if (!s_cur.tz[0]) {
             strlcpy(s_cur.tz, "UTC0", sizeof(s_cur.tz));
         }
@@ -106,6 +110,7 @@ esp_err_t settings_save(const settings_t *s)
     if (err == ESP_OK) err = nvs_set_u16(h, "interval", s->interval_min);
     if (err == ESP_OK) err = nvs_set_str(h, "tz", s->tz);
     if (err == ESP_OK) err = nvs_set_u8(h, "keep_run", s->keep_running);
+    if (err == ESP_OK) err = nvs_set_str(h, "host_base", s->hostname);
     if (err == ESP_OK) {
         if (s->has_admin) {
             err = nvs_set_blob(h, "admin_salt", s->admin_salt, sizeof(s->admin_salt));
@@ -165,6 +170,21 @@ bool settings_check_admin(const char *password)
         diff |= h[i] ^ s.admin_hash[i]; /* constant time */
     }
     return diff == 0;
+}
+
+bool settings_valid_hostname(const char *name)
+{
+    size_t n = name ? strlen(name) : 0;
+    if (n < 1 || n > SETTINGS_HOST_MAX || name[0] == '-' || name[n - 1] == '-') {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) {
+            return false;
+        }
+    }
+    return true;
 }
 
 const char *keep_running_name(keep_running_t k)

@@ -41,6 +41,7 @@ typedef enum {
 
 #define IMAGE_RETRY_US (20 * 1000000LL)
 #define WAIT_US        (3 * 1000000LL) /* longest a switch waits for data */
+#define VALUE_WAIT_MS  100 /* longest a source waits for room in the UI queue */
 
 typedef struct {
     msg_kind_t kind;
@@ -700,7 +701,8 @@ static void request_image(widget_view_t *w, int slot)
     uint32_t bg;
     widget_image_box(w, &mw, &mh, &bg);
     w->img_retry_us = 0;
-    fetch_image(s_view_gen[slot / LAYOUT_MAX_WIDGETS], slot, w->img_url, mw, mh, bg);
+    fetch_image(s_view_gen[slot / LAYOUT_MAX_WIDGETS], slot, w->img_url, mw, mh, bg,
+                w->def->crop);
 }
 
 /* An image widget's value is the address of a PNG; "" or "--" means none. */
@@ -1002,7 +1004,11 @@ void ui_source_value(unsigned gen, int index, const char *path, bool is_num, dou
             return;
         }
     }
-    if (xQueueSend(s_queue, &msg, 0) != pdTRUE) {
+    /* Sources send each value once, so a dropped one stays wrong until it
+     * changes. A burst (all values on connect) can fill the queue: wait for
+     * the UI to catch up, bounded so a source being stopped cannot hang. */
+    if (xQueueSend(s_queue, &msg, pdMS_TO_TICKS(VALUE_WAIT_MS)) != pdTRUE) {
+        ESP_LOGW(TAG, "UI busy, dropped %s", path);
         free(msg.value.text);
     }
 }

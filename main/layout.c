@@ -241,6 +241,9 @@ static bool parse_widget(const cJSON *w, const layout_t *l, uint16_t *used,
         }
     }
 
+    const cJSON *crop = cJSON_GetObjectItemCaseSensitive(w, "crop");
+    out->crop = !cJSON_IsBool(crop) || cJSON_IsTrue(crop);
+
     out->format = get_str(w, "format");
     if (out->kind == WIDGET_CLOCK) {
         if (!out->format || strlen(out->format) > 16) {

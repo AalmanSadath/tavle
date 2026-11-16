@@ -50,6 +50,9 @@ progress{width:100%;margin-top:10px}
   <input id="ssid" maxlength="32" autocomplete="off" autocapitalize="off">
   <label for="wpass">password</label>
   <input id="wpass" type="password" maxlength="63" autocomplete="off" placeholder="unchanged">
+  <label for="dname">device name</label>
+  <input id="dname" maxlength="20" autocomplete="off" autocapitalize="off" placeholder="tavle">
+  <p class="hint">the address is http://&lt;name&gt;.local. letters, digits and -. when another device has the name, -2, -3 ... is added.</p>
 </section>
 
 <section>
@@ -172,6 +175,7 @@ async function refresh(fillForm) {
     $("interval").value = s.interval;
     $("tz").value = s.tz;
     $("keep").value = s.keep_running;
+    $("dname").value = s.device_name;
     $("wpass").placeholder = s.ssid ? "unchanged" : "";
   }
   return s;
@@ -215,6 +219,20 @@ async function waitForJoin(ssid) {
   say($("msg"), "still not connected to " + ssid + ". check the password.", "err");
 }
 
+async function waitForName(old) {
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const s = await refresh(false);
+      if (s.hostname && s.hostname !== old) {
+        say($("msg"), "saved. the setup page is now at http://" + s.hostname + ".local or http://" + s.ip, "ok");
+        return;
+      }
+    } catch (e) { /* keep waiting */ }
+  }
+  say($("msg"), "saved. the name did not change; the device may not be on the network, or the name is in use", "ok");
+}
+
 $("save").onclick = async () => {
   const msg = $("msg");
   const body = {};
@@ -231,6 +249,10 @@ $("save").onclick = async () => {
   const tz = $("tz").value.trim();
   if (tz) body.tz = tz;
   body.keep_running = $("keep").value;
+  const dname = $("dname").value.trim().toLowerCase();
+  if (dname && !/^[a-z0-9]([a-z0-9-]{0,18}[a-z0-9])?$/.test(dname)) { say(msg, "device name: up to 20 letters, digits and -, not starting or ending with -", "err"); return; }
+  const renamed = current && dname !== current.device_name;
+  body.device_name = dname;
 
   const a1 = $("apass").value, a2 = $("apass2").value;
   if ($("aclear").checked) {
@@ -249,6 +271,9 @@ $("save").onclick = async () => {
     if (body.ssid) {
       say(msg, "saved. joining " + body.ssid + "...");
       waitForJoin(body.ssid);
+    } else if (renamed) {
+      say(msg, "saved. picking the new name...");
+      waitForName(current.hostname);
     } else {
       say(msg, "saved", "ok");
       refresh(false);
