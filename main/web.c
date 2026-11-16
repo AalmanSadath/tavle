@@ -162,6 +162,7 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddStringToObject(o, "state", net_state_name(n.state));
     cJSON_AddStringToObject(o, "ssid", n.ssid);
     cJSON_AddStringToObject(o, "ip", n.ip);
+    cJSON_AddStringToObject(o, "hostname", n.hostname);
     cJSON_AddNumberToObject(o, "rssi", n.rssi);
     cJSON_AddBoolToObject(o, "hotspot", n.ap_active);
     cJSON_AddStringToObject(o, "layout_url", s.layout_url);

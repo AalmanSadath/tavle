@@ -603,7 +603,8 @@ static void show_dashboard(const net_status_t *n)
     lv_obj_set_style_pad_all(toast, 12, 0);
     lv_obj_remove_flag(toast, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(toast, LV_FLEX_FLOW_COLUMN);
-    label(toast, &lv_font_montserrat_20, 0xffffff, "tavle.local");
+    snprintf(buf, sizeof(buf), "%s.local", n->hostname[0] ? n->hostname : "tavle");
+    label(toast, &lv_font_montserrat_20, 0xffffff, buf);
     snprintf(buf, sizeof(buf), "%s  on  %s", n->ip, n->ssid);
     label(toast, &lv_font_montserrat_14, 0x8e8e93, buf);
     lv_obj_delete_delayed(toast, TOAST_MS);

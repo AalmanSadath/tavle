@@ -134,7 +134,7 @@ function showStatus(s) {
   const rows = [
     ["state", s.state],
     ["network", s.ssid || "none"],
-    ["address", s.ip ? s.ip + "  (tavle.local)" : "none"],
+    ["address", s.ip ? s.ip + (s.hostname ? "  (" + s.hostname + ".local)" : "") : "none"],
     ["signal", s.ip ? s.rssi + " dBm" : "none"],
     ["hotspot", s.hotspot ? "on" : "off"],
     ["layout", s.layout_source + ", " + s.layout_bytes + " bytes" +
@@ -207,7 +207,7 @@ async function waitForJoin(ssid) {
     try {
       const s = await refresh(false);
       if (s.state === "connected" && s.ssid === ssid) {
-        say($("msg"), "joined " + ssid + ". the setup page is now at http://tavle.local or http://" + s.ip, "ok");
+        say($("msg"), "joined " + ssid + ". the setup page is now at http://" + (s.hostname || "tavle") + ".local or http://" + s.ip, "ok");
         return;
       }
     } catch (e) { /* page may be moving networks */ }
