@@ -47,9 +47,17 @@ USB serial console at startup (`idf.py monitor`).
 ## Setup page
 
 On your network the page is at `http://tavle.local/` (or the address shown at
-startup). It has the Wi-Fi settings, the layout URL, how often to check it,
-whether to keep other screens running (see Screens), a layout reload button, a
-next screen button, a reboot button, and firmware upload.
+startup). It has the Wi-Fi settings, the device name, the layout URL, how
+often to check it, whether to keep other screens running (see Screens), a
+layout reload button, a next screen button, a reboot button, and firmware
+upload.
+
+The device name sets the address: `printer` makes the page
+`http://printer.local/`. Without a name the device is `tavle`. When another
+device on the network already has the name, the device takes the first free
+one of `-2` to `-9` added (`tavle-2`, `printer-2`) and keeps it from then on.
+The name stays through firmware updates, over USB or the setup page; only
+`idf.py erase-flash` clears it.
 
 Without an admin password, anyone on your network can open the page, change
 settings and upload firmware. With one, the page asks for it. The page uses

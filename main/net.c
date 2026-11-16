@@ -37,6 +37,7 @@ typedef enum {
     EV_FALLBACK,
     EV_AP_CLIENT_LEFT,
     EV_APPLY,
+    EV_RENAME,
 } net_event_t;
 
 static QueueHandle_t s_queue;
@@ -212,20 +213,47 @@ static bool name_taken(const char *name)
     return !mine;
 }
 
-/* On the first join: keep the name used last time if it is still free, else
- * the first free one of tavle, tavle-2 ... tavle-9. Saved, so boards keep
- * their names across restarts. When two boards still collide later, the
- * mDNS responder renames one itself; the status shows the name in use. */
-static void claim_hostname(void)
+/* The device name from settings, or tavle. */
+static void name_base(char *out, size_t size)
 {
-    static bool claimed;
-    if (claimed) {
+    settings_t st;
+    settings_get(&st);
+    strlcpy(out, st.hostname[0] ? st.hostname : NAME_BASE, size);
+    memset(&st, 0, sizeof(st));
+}
+
+/* True when name is base or base-2 ... base-9. */
+static bool name_of_base(const char *name, const char *base)
+{
+    size_t n = strlen(base);
+    if (strncmp(name, base, n) != 0) {
+        return false;
+    }
+    return name[n] == '\0' ||
+           (name[n] == '-' && name[n + 1] >= '2' && name[n + 1] <= '0' + NAME_MAX_SUFFIX &&
+            name[n + 2] == '\0');
+}
+
+/* On the first join, and when the device name changes: keep the name used
+ * last time if it still belongs to the base and is free, else the first free
+ * one of base, base-2 ... base-9. Saved, so devices keep their names across
+ * restarts. When two devices still collide later, the mDNS responder renames
+ * one itself; the status shows the name in use. */
+static void claim_hostname(bool settle)
+{
+    static char claimed_base[SETTINGS_HOST_MAX + 1];
+    char base[SETTINGS_HOST_MAX + 1];
+    name_base(base, sizeof(base));
+    if (strcmp(base, claimed_base) == 0) {
         return;
     }
-    claimed = true;
-    /* mDNS enables the interface on the same got-IP event, on its own task;
-     * a query sent before that goes nowhere and every name looks free. */
-    vTaskDelay(pdMS_TO_TICKS(NAME_SETTLE_MS));
+    strlcpy(claimed_base, base, sizeof(claimed_base));
+    if (settle) {
+        /* mDNS enables the interface on the same got-IP event, on its own
+         * task; a query sent before that goes nowhere and every name looks
+         * free. */
+        vTaskDelay(pdMS_TO_TICKS(NAME_SETTLE_MS));
+    }
 
     char saved[24] = "";
     nvs_handle_t h;
@@ -236,6 +264,9 @@ static void claim_hostname(void)
         }
         nvs_close(h);
     }
+    if (!name_of_base(saved, base)) {
+        saved[0] = '\0';
+    }
 
     char name[24] = "";
     if (saved[0] && !name_taken(saved)) {
@@ -244,20 +275,26 @@ static void claim_hostname(void)
     for (int i = 1; !name[0] && i <= NAME_MAX_SUFFIX; i++) {
         char c[24];
         if (i == 1) {
-            strlcpy(c, NAME_BASE, sizeof(c));
+            strlcpy(c, base, sizeof(c));
         } else {
-            snprintf(c, sizeof(c), NAME_BASE "-%d", i);
+            snprintf(c, sizeof(c), "%s-%d", base, i);
         }
         if (strcmp(c, saved) != 0 && !name_taken(c)) {
             strlcpy(name, c, sizeof(name));
         }
     }
     if (!name[0]) {
-        strlcpy(name, NAME_BASE, sizeof(name)); /* all taken: let the responder rename */
+        strlcpy(name, base, sizeof(name)); /* all taken: let the responder rename */
     }
 
+    static bool service_added;
     mdns_hostname_set(name);
-    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    mdns_instance_name_set(name);
+    if (!service_added) {
+        mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+        service_added = true;
+    }
+    esp_netif_set_hostname(s_sta_netif, name); /* DHCP name, from the next lease */
     if (strcmp(name, saved) != 0 && nvs_open("tavle", NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_str(h, "hostname", name);
         nvs_commit(h);
@@ -273,7 +310,7 @@ static void handle(net_event_t ev)
         esp_timer_stop(s_fallback_timer);
         esp_timer_stop(s_retry_timer);
         s_retry_ms = RETRY_MIN_MS;
-        claim_hostname(); /* before the connected screen, which shows the name */
+        claim_hostname(true); /* before the connected screen, which shows the name */
         set_state(NET_CONNECTED);
         stop_ap();
         break;
@@ -317,6 +354,13 @@ static void handle(net_event_t ev)
 
     case EV_APPLY:
         connect_saved();
+        break;
+
+    case EV_RENAME:
+        /* Off the network the next join picks the name. */
+        if (s_status.state == NET_CONNECTED) {
+            claim_hostname(false);
+        }
         break;
     }
     notify();
@@ -364,7 +408,9 @@ esp_err_t net_start(net_status_cb_t cb)
     /* esp_netif_init and the default event loop are set up in app_main */
     s_sta_netif = esp_netif_create_default_wifi_sta();
     s_ap_netif = esp_netif_create_default_wifi_ap();
-    esp_netif_set_hostname(s_sta_netif, "tavle");
+    char base[SETTINGS_HOST_MAX + 1];
+    name_base(base, sizeof(base));
+    esp_netif_set_hostname(s_sta_netif, base); /* claim_hostname may add a suffix */
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -388,7 +434,7 @@ esp_err_t net_start(net_status_cb_t cb)
 
     /* The host name is picked on the first join, see claim_hostname. */
     if (mdns_init() == ESP_OK) {
-        mdns_instance_name_set(NAME_BASE);
+        mdns_instance_name_set(base);
     } else {
         ESP_LOGW(TAG, "mDNS failed to start");
     }
@@ -417,6 +463,11 @@ void net_get_status(net_status_t *out)
 void net_apply_settings(void)
 {
     post(EV_APPLY);
+}
+
+void net_rename(void)
+{
+    post(EV_RENAME);
 }
 
 int net_scan(net_scan_entry_t *out, int max)

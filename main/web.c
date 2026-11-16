@@ -40,7 +40,7 @@ static esp_err_t send_error(httpd_req_t *req, const char *status, const char *ms
 {
     httpd_resp_set_status(req, status);
     httpd_resp_set_type(req, "application/json");
-    char buf[96];
+    char buf[160];
     snprintf(buf, sizeof(buf), "{\"ok\":false,\"error\":\"%s\"}", msg);
     return httpd_resp_sendstr(req, buf);
 }
@@ -163,6 +163,7 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddStringToObject(o, "ssid", n.ssid);
     cJSON_AddStringToObject(o, "ip", n.ip);
     cJSON_AddStringToObject(o, "hostname", n.hostname);
+    cJSON_AddStringToObject(o, "device_name", s.hostname);
     cJSON_AddNumberToObject(o, "rssi", n.rssi);
     cJSON_AddBoolToObject(o, "hotspot", n.ap_active);
     cJSON_AddStringToObject(o, "layout_url", s.layout_url);
@@ -349,6 +350,19 @@ static esp_err_t settings_post(httpd_req_t *req)
         err = "keep_running must be auto, on or off";
     }
 
+    const char *name = str_field(in, "device_name", &present);
+    if (!err && present) {
+        char low[SETTINGS_HOST_MAX + 2] = "";
+        for (size_t i = 0; name && name[i] && i < sizeof(low) - 1; i++) {
+            low[i] = (char)tolower((unsigned char)name[i]);
+        }
+        if (!name || (name[0] && (strlen(name) >= sizeof(low) || !settings_valid_hostname(low)))) {
+            err = "device name: up to 20 letters, digits and -, not starting or ending with -";
+        } else {
+            strlcpy(s.hostname, low, sizeof(s.hostname));
+        }
+    }
+
     /* Changing or clearing an existing password already needed the current
      * one, because every route is behind the login when it is set. */
     const char *admin = str_field(in, "admin_password", &present);
@@ -382,6 +396,9 @@ static esp_err_t settings_post(httpd_req_t *req)
         }
         if (before.keep_running != s.keep_running) {
             ui_settings_changed();
+        }
+        if (strcmp(before.hostname, s.hostname) != 0) {
+            net_rename();
         }
     }
     memset(&s, 0, sizeof(s));

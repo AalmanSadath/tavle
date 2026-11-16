@@ -40,6 +40,9 @@ void net_get_status(net_status_t *out);
 /* Rejoins with the credentials now in settings. Returns at once. */
 void net_apply_settings(void);
 
+/* Picks a new mDNS name from the device name now in settings. Returns at once. */
+void net_rename(void);
+
 /* Blocking scan, unique SSIDs strongest first. Returns the number written. */
 int net_scan(net_scan_entry_t *out, int max);
 

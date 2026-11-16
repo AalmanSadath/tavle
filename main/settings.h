@@ -14,6 +14,7 @@
 #define SETTINGS_INTERVAL_MAX   1440
 #define SETTINGS_INTERVAL_DEF   5
 #define SETTINGS_TZ_MAX         48
+#define SETTINGS_HOST_MAX       20  /* leaves room for a "-9" suffix */
 
 typedef enum {
     KEEP_AUTO, /* the layout's "keep_running", else the board default */
@@ -28,6 +29,7 @@ typedef struct {
     uint16_t interval_min;
     char tz[SETTINGS_TZ_MAX + 1];  /* POSIX TZ string */
     keep_running_t keep_running;   /* keep other screens running */
+    char hostname[SETTINGS_HOST_MAX + 1]; /* mDNS base name, "" = tavle */
     bool has_admin;
     uint8_t admin_salt[16];
     uint8_t admin_hash[32];
@@ -49,6 +51,9 @@ void settings_set_admin(settings_t *s, const char *password);
 bool settings_check_admin(const char *password);
 
 bool settings_has_admin(void);
+
+/* True for 1 to 20 of a-z, 0-9 and "-", not starting or ending with "-". */
+bool settings_valid_hostname(const char *name);
 
 const char *keep_running_name(keep_running_t k);
 
