@@ -700,7 +700,8 @@ static void request_image(widget_view_t *w, int slot)
     uint32_t bg;
     widget_image_box(w, &mw, &mh, &bg);
     w->img_retry_us = 0;
-    fetch_image(s_view_gen[slot / LAYOUT_MAX_WIDGETS], slot, w->img_url, mw, mh, bg);
+    fetch_image(s_view_gen[slot / LAYOUT_MAX_WIDGETS], slot, w->img_url, mw, mh, bg,
+                w->def->crop);
 }
 
 /* An image widget's value is the address of a PNG; "" or "--" means none. */

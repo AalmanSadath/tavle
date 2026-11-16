@@ -53,6 +53,7 @@ typedef struct {
     const char *label;
     double min, max;
     int period_s; /* graph: seconds between samples */
+    bool crop;    /* image: cut off fully transparent borders */
 } layout_widget_t;
 
 typedef struct {

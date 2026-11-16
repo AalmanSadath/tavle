@@ -165,6 +165,9 @@ scaled to fit the cell:
 { "type": "image", "col": 2, "row": 0, "source": "printer", "path": "tavle.thumbnail" }
 ```
 
+Fully transparent borders are cut off, so a slicer thumbnail's object fills
+the cell. Add `"crop": false` to the widget to show the whole picture.
+
 PNG pictures must be at most 1024 pixels wide and high, 8 bits per channel,
 and not interlaced. Slicer thumbnails are; a thumbnail between 100 and 1024
 pixels wide is picked. Decoding needs a free 32 KB block of memory. If there

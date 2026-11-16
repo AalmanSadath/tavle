@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -29,6 +30,8 @@ typedef enum { REQ_FETCH, REQ_RELOAD, REQ_SETTINGS, REQ_IMAGE } fetch_req_t;
 
 #define IMAGE_JOBS_MAX  4
 #define IMAGE_MAX_BYTES (256 * 1024)
+#define HEAD_BUF        1024 /* Moonraker names the file twice in its headers */
+#define BOX_CACHE       8
 
 static QueueHandle_t s_queue;
 static SemaphoreHandle_t s_lock;
@@ -231,11 +234,13 @@ typedef struct {
     char *url;
     int max_w, max_h;
     uint32_t bg;
+    bool crop;
 } image_job_t;
 
 static image_job_t s_jobs[IMAGE_JOBS_MAX];
 
-void fetch_image(unsigned gen, int slot, const char *url, int max_w, int max_h, uint32_t bg)
+void fetch_image(unsigned gen, int slot, const char *url, int max_w, int max_h, uint32_t bg,
+                 bool crop)
 {
     char *copy = strdup(url);
     if (!copy) {
@@ -257,7 +262,7 @@ void fetch_image(unsigned gen, int slot, const char *url, int max_w, int max_h, 
     if (job) {
         free(job->url);
         *job = (image_job_t){.used = true, .gen = gen, .slot = slot, .url = copy,
-                             .max_w = max_w, .max_h = max_h, .bg = bg};
+                             .max_w = max_w, .max_h = max_h, .bg = bg, .crop = crop};
     }
     xSemaphoreGive(s_lock);
     if (!job) {
@@ -272,7 +277,36 @@ void fetch_image(unsigned gen, int slot, const char *url, int max_w, int max_h, 
  * almost all free memory, and the full HTTP client costs several KB more.
  * Returns a socket positioned at the body of a 200 response, or -1 with a
  * reason in err. Body bytes read with the headers go to *extra. */
-static int open_plain(const char *url, char *extra, int *extra_len, char *err, size_t err_len)
+static uint32_t fnv1a(uint32_t h, const char *s, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        h = (h ^ (uint8_t)s[i]) * 16777619u;
+    }
+    return h;
+}
+
+/* Hash of the url and the headers that change with the file, so a picture
+ * saved again under the same name gets a new key. */
+static uint32_t picture_key(const char *url, const char *headers)
+{
+    static const char *const names[] = {"content-length:", "last-modified:", "etag:"};
+    uint32_t h = fnv1a(2166136261u, url, strlen(url));
+    for (const char *line = headers; line && *line; line = strstr(line, "\r\n")) {
+        line += line[0] == '\r' ? 2 : 0;
+        for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            size_t n = strlen(names[i]);
+            if (strncasecmp(line, names[i], n) == 0) {
+                h = fnv1a(h, line, strcspn(line, "\r\n"));
+            }
+        }
+    }
+    return h;
+}
+
+/* Opens url (plain http) and reads the response headers. The body bytes that
+ * came with them go to extra (HEAD_BUF bytes); *key gets picture_key. */
+static int open_plain(const char *url, char *extra, int *extra_len, uint32_t *key, char *err,
+                      size_t err_len)
 {
     char host[64];
     const char *path;
@@ -324,7 +358,7 @@ static int open_plain(const char *url, char *extra, int *extra_len, char *err, s
         return -1;
     }
 
-    char req[384];
+    char req[HEAD_BUF];
     int len = snprintf(req, sizeof(req),
                        "GET %s HTTP/1.0\r\nHost: %s:%d\r\nUser-Agent: tavle\r\n\r\n", path, host,
                        port);
@@ -359,6 +393,8 @@ static int open_plain(const char *url, char *extra, int *extra_len, char *err, s
         close(sock);
         return -1;
     }
+    end[2] = '\0'; /* headers only, for the key */
+    *key = picture_key(url, req);
     end += 4;
     *extra_len = got - (int)(end - req);
     memcpy(extra, end, *extra_len);
@@ -392,16 +428,64 @@ static int read_picture(void *ctx, uint8_t *buf, size_t len)
     return n;
 }
 
-static png_picture_t *download_png(const image_job_t *job, char *err, size_t err_len)
+/* Boxes of visible pixels of pictures seen, so a picture shown again needs
+ * one download, not two. */
+static struct {
+    uint32_t key;
+    png_box_t box;
+} s_boxes[BOX_CACHE];
+static int s_boxes_next;
+
+static const png_box_t *cached_box(uint32_t key)
 {
-    char head[512];
+    for (int i = 0; i < BOX_CACHE; i++) {
+        if (s_boxes[i].key == key && s_boxes[i].box.x1 > 0) {
+            return &s_boxes[i].box;
+        }
+    }
+    return NULL;
+}
+
+static png_picture_t *download_png(const image_job_t *job, png_box_t *box, char *err,
+                                   size_t err_len)
+{
+    static char head[HEAD_BUF]; /* only the fetch task downloads pictures */
     picture_reader_t r = {.head = head};
-    r.sock = open_plain(job->url, head, &r.head_len, err, err_len);
+    uint32_t key;
+    r.sock = open_plain(job->url, head, &r.head_len, &key, err, err_len);
     if (r.sock < 0) {
         return NULL;
     }
     const char *why = NULL;
-    png_picture_t *pic = png_decode(read_picture, &r, job->max_w, job->max_h, job->bg, &why);
+    const png_box_t *use = NULL;
+    if (job->crop) {
+        use = cached_box(key);
+        if (!use) {
+            /* First pass finds the box, second decodes it. */
+            png_box_t found;
+            bool ok = png_alpha_box(read_picture, &r, &found, &why);
+            close(r.sock);
+            if (!ok) {
+                if (r.too_big) {
+                    snprintf(err, err_len, "image larger than %d bytes", IMAGE_MAX_BYTES);
+                } else {
+                    snprintf(err, err_len, "%s", why);
+                }
+                return NULL;
+            }
+            s_boxes[s_boxes_next].key = key;
+            s_boxes[s_boxes_next].box = found;
+            s_boxes_next = (s_boxes_next + 1) % BOX_CACHE;
+            use = cached_box(key);
+            r = (picture_reader_t){.head = head};
+            r.sock = open_plain(job->url, head, &r.head_len, &key, err, err_len);
+            if (r.sock < 0) {
+                return NULL;
+            }
+        }
+        *box = *use;
+    }
+    png_picture_t *pic = png_decode(read_picture, &r, job->max_w, job->max_h, job->bg, use, &why);
     close(r.sock);
     if (!pic) {
         if (r.too_big) {
@@ -432,10 +516,11 @@ static void do_images(void)
 
         char err[64] = "";
         int64_t t0 = esp_timer_get_time();
-        png_picture_t *pic = download_png(&job, err, sizeof(err));
+        png_box_t box = {0};
+        png_picture_t *pic = download_png(&job, &box, err, sizeof(err));
         if (pic) {
-            ESP_LOGI(TAG, "image %dx%d in %lld ms, free heap %u", pic->w, pic->h,
-                     (esp_timer_get_time() - t0) / 1000,
+            ESP_LOGI(TAG, "image %dx%d, crop %d,%d-%d,%d, in %lld ms, free heap %u", pic->w,
+                     pic->h, box.x0, box.y0, box.x1, box.y1, (esp_timer_get_time() - t0) / 1000,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         } else {
             ESP_LOGW(TAG, "image %s (%dx%d): %s, free heap %u, largest block %u", job.url,
