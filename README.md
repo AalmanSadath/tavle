@@ -24,7 +24,7 @@ from a URL, and shows live printer data from Moonraker. The `http-json` and
 | BL | 1 | 21 |
 
 Button: GPIO 0 to GND on both boards (on the S3 this is the BOOT button).
-Press it for the next screen; hold it for two seconds to restart.
+Press it for the next screen; hold it for two seconds and let go to restart.
 
 The display's IM0, IM1 and IM2 jumpers must be set for four-wire SPI (1, 1, 1).
 

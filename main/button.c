@@ -12,6 +12,9 @@ static const char *TAG = "button";
 #define POLL_MS     20
 #define DEBOUNCE    3    /* polls the level must hold before it counts */
 #define SHORT_MAX_MS 1000
+/* Held this long, the device restarts once the button is let go. The
+ * ESP32-S3 reads GPIO 0 at every reset: restarting while it is still held
+ * would start the ROM download mode instead of the firmware. */
 #define REBOOT_MS   2000
 
 static void poll(void *arg)
@@ -27,6 +30,10 @@ static void poll(void *arg)
         }
         down = raw;
         same = 0;
+        if (!down && held_ms >= REBOOT_MS) {
+            ESP_LOGI(TAG, "released after a hold, rebooting");
+            esp_restart();
+        }
         if (!down && held_ms < SHORT_MAX_MS) {
             ui_next_screen();
         }
@@ -34,11 +41,10 @@ static void poll(void *arg)
         return;
     }
     same = 0;
-    if (down) {
+    if (down && held_ms < REBOOT_MS) {
         held_ms += POLL_MS;
         if (held_ms >= REBOOT_MS) {
-            ESP_LOGI(TAG, "held, rebooting");
-            esp_restart();
+            ESP_LOGI(TAG, "held, rebooting once released");
         }
     }
 }
