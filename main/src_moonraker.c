@@ -564,8 +564,11 @@ static void layer_text(const mr_t *m, char *buf, size_t len)
     double cur = m->current_layer;
     if (cur < 0) {
         cur = 0;
-        if (total > 0 && f->layer_height > 0) {
-            /* Klipper is not told the layer: work it out from the height */
+        if (total > 0 && f->layer_height > 0 && m->print_duration > 0) {
+            /* Klipper is not told the layer: work it out from the height,
+             * as Mainsail does, once printing has started. During the start
+             * gcode (heating, homing, purging) the nozzle can sit high above
+             * the bed, which would read as the last layer. */
             cur = ceil((m->z - f->first_layer_height) / f->layer_height + 1);
             cur = cur > total ? total : cur < 0 ? 0 : cur;
         }
