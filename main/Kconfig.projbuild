@@ -1,50 +1,25 @@
 menu "tavle"
 
-choice TAVLE_BOARD
-    prompt "Board"
-    default TAVLE_BOARD_C3
+choice TAVLE_VARIANT
+    prompt "Firmware variant"
+    default TAVLE_VARIANT_C3
     help
-        Set by boards/<board>/sdkconfig.defaults; pick the board with
-        idf.py -DBOARD=<board>, not here.
+        Chip and memory build. Set by variants/<variant>/sdkconfig.defaults;
+        pick it with idf.py -DVARIANT=<variant>, not here. Pins and the
+        display come from the hardware config at run time.
 
-config TAVLE_BOARD_C3
-    bool "ESP32-C3"
+config TAVLE_VARIANT_C3
+    bool "ESP32-C3, 4 MB flash"
     depends on IDF_TARGET_ESP32C3
 
-config TAVLE_BOARD_S3
-    bool "ESP32-S3 N16R8"
+config TAVLE_VARIANT_S3_N16R8
+    bool "ESP32-S3 N16R8: 16 MB flash, 8 MB octal PSRAM"
     depends on IDF_TARGET_ESP32S3
 
 endchoice
 
-choice TAVLE_DISPLAY
-    prompt "Display"
-    default TAVLE_DISPLAY_ST7796
-    help
-        Display driver. Set in boards/<board>/sdkconfig.defaults.
-
-config TAVLE_DISPLAY_ST7796
-    bool "ST7796, 320 x 480, four-wire SPI"
-
-endchoice
-
-config TAVLE_LCD_SPI_MHZ
-    int "Display SPI clock (MHz)"
-    range 1 80
-    default 40
-    help
-        SPI clock used for pixel data to an SPI display.
-
 config TAVLE_BENCH
     bool "Run refresh-rate benchmark after first draw"
     default n
-
-config TAVLE_WIFI_TX_POWER_QDBM
-    int "Wi-Fi transmit power limit (0.25 dBm steps, 0 = chip default)"
-    range 0 84
-    default 0
-    help
-        34 is 8.5 dBm. Small ESP32-C3 boards with a chip antenna often only
-        work with a reduced transmit power. Each board sets its own default.
 
 endmenu

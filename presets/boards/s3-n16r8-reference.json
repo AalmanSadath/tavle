@@ -1,0 +1,6 @@
+{
+  "board": "ESP32-S3 N16R8 reference",
+  "variant": "s3-n16r8",
+  "pins": { "sck": 12, "mosi": 11, "miso": 13, "cs": 10, "dc": 9, "rst": 14, "bl": 21, "button": 0 },
+  "wifi_tx_power_qdbm": 0
+}

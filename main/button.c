@@ -1,10 +1,10 @@
 #include "button.h"
 
-#include "board.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "hwcfg.h"
 #include "ui.h"
 
 static const char *TAG = "button";
@@ -23,7 +23,7 @@ static void poll(void *arg)
     static int same;      /* polls the raw level has differed from it */
     static int held_ms;
 
-    bool raw = gpio_get_level(TAVLE_PIN_BUTTON) == 0;
+    bool raw = gpio_get_level(hwcfg()->button) == 0;
     if (raw != down) {
         if (++same < DEBOUNCE) {
             return;
@@ -51,8 +51,12 @@ static void poll(void *arg)
 
 esp_err_t button_start(void)
 {
+    if (hwcfg()->button < 0) {
+        ESP_LOGI(TAG, "no button in the hardware config");
+        return ESP_OK;
+    }
     const gpio_config_t cfg = {
-        .pin_bit_mask = BIT64(TAVLE_PIN_BUTTON),
+        .pin_bit_mask = BIT64(hwcfg()->button),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };

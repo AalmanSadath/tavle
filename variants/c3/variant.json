@@ -1,0 +1,11 @@
+{
+  "name": "ESP32-C3, 4 MB flash",
+  "chip": "ESP32-C3",
+  "flash_mb": 4,
+  "psram_mb": 0,
+  "partitions": "partitions.csv",
+  "gpios": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+  "reserved": [11, 12, 13, 14, 15, 16, 17, 18, 19],
+  "strapping": [2, 8, 9],
+  "iomux_spi": { "sck": 6, "mosi": 7, "miso": 2, "cs": 10 }
+}
