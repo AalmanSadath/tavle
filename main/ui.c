@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "board.h"
+#include "hwcfg.h"
 #include "display.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -658,7 +659,7 @@ static void bench(void)
         worst = us > worst ? us : worst;
     }
     ESP_LOGI(TAG, "bench full screen @ %d MHz: avg %.1f ms (%.1f fps), worst %.1f ms",
-             CONFIG_TAVLE_LCD_SPI_MHZ, total / 1000.0 / full_runs, 1e6 * full_runs / total,
+             hwcfg()->spi_mhz, total / 1000.0 / full_runs, 1e6 * full_runs / total,
              worst / 1000.0);
 
     total = worst = 0;
@@ -671,7 +672,7 @@ static void bench(void)
     widgets_reset(view);
     lvgl_port_unlock();
     ESP_LOGI(TAG, "bench all widgets changing @ %d MHz: avg %.1f ms (%.1f fps), worst %.1f ms",
-             CONFIG_TAVLE_LCD_SPI_MHZ, total / 1000.0 / update_runs, 1e6 * update_runs / total,
+             hwcfg()->spi_mhz, total / 1000.0 / update_runs, 1e6 * update_runs / total,
              worst / 1000.0);
 }
 #endif

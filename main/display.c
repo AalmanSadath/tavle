@@ -1,19 +1,39 @@
 #include "display.h"
 
+#include <string.h>
+
 #include "board.h"
 #include "display_driver.h"
 #include "esp_check.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "hwcfg.h"
 
 static const char *TAG = "display";
 
-#if CONFIG_TAVLE_DISPLAY_ST7796
-#define DRIVER display_st7796
-#else
-#error "no display driver selected"
-#endif
+/* Every driver is in every build; the hardware config picks one by name. */
+static const struct {
+    const char *name;
+    const display_driver_t *driver;
+} s_drivers[] = {
+    {"st7796", &display_st7796},
+};
+
+static const display_driver_t *find(const char *name)
+{
+    for (size_t i = 0; i < sizeof(s_drivers) / sizeof(s_drivers[0]); i++) {
+        if (strcmp(s_drivers[i].name, name) == 0) {
+            return s_drivers[i].driver;
+        }
+    }
+    return NULL;
+}
+
+bool display_known(const char *driver)
+{
+    return find(driver) != NULL;
+}
 
 static display_panel_t s_panel;
 static lv_display_t *s_disp;
@@ -24,7 +44,10 @@ static uint16_t s_mark[MARK_SIZE * MARK_SIZE]; /* internal RAM, DMA capable */
 
 esp_err_t display_init(lv_display_t **disp_out)
 {
-    ESP_RETURN_ON_ERROR(DRIVER.init(TAVLE_LCD_BUF_LINES, &s_panel), TAG, "%s", DRIVER.name);
+    const hwcfg_t *hw = hwcfg();
+    const display_driver_t *drv = find(hw->display);
+    ESP_RETURN_ON_FALSE(drv, ESP_ERR_NOT_FOUND, TAG, "no driver %s", hw->display);
+    ESP_RETURN_ON_ERROR(drv->init(hw, TAVLE_LCD_BUF_LINES, &s_panel), TAG, "%s", drv->name);
 
     const lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     ESP_RETURN_ON_ERROR(lvgl_port_init(&port_cfg), TAG, "lvgl port");
@@ -51,11 +74,11 @@ esp_err_t display_init(lv_display_t **disp_out)
     lv_display_t *disp = lvgl_port_add_disp(&disp_cfg);
     ESP_RETURN_ON_FALSE(disp, ESP_FAIL, TAG, "add disp");
 
-    DRIVER.backlight(true);
+    drv->backlight(true);
     s_disp = disp;
     *disp_out = disp;
-    ESP_LOGI(TAG, "%s %dx%d on %s at %d MHz, %s %d-line buffer%s", DRIVER.name,
-             s_panel.width, s_panel.height, TAVLE_BOARD_NAME, CONFIG_TAVLE_LCD_SPI_MHZ,
+    ESP_LOGI(TAG, "%s %dx%d on %s at %d MHz, %s %d-line buffer%s", drv->name,
+             s_panel.width, s_panel.height, hw->board, hw->spi_mhz,
              TAVLE_LCD_DOUBLE_BUF ? "two" : "one", TAVLE_LCD_BUF_LINES,
              TAVLE_LCD_DOUBLE_BUF ? "s" : "");
     return ESP_OK;

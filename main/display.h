@@ -5,8 +5,11 @@
 #include "esp_err.h"
 #include "lvgl.h"
 
-/* Brings up the display driver chosen in Kconfig, then LVGL on it. */
+/* Brings up the display driver the hardware config names, then LVGL on it. */
 esp_err_t display_init(lv_display_t **disp_out);
+
+/* true when the firmware has a driver of this name ("st7796"). */
+bool display_known(const char *driver);
 
 /* Screen size in pixels, as LVGL sees it. */
 int display_width(void);

@@ -6,6 +6,7 @@
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
 #include "fetch.h"
+#include "hwcfg.h"
 #include "net.h"
 #include "settings.h"
 #include "store.h"
@@ -51,6 +52,7 @@ void app_main(void)
 {
     log_heap("at boot");
     ESP_ERROR_CHECK(settings_init());
+    hwcfg_load(); /* pins and display, before anything uses them */
 
     /* Display first: its DMA buffers need large free blocks, which Wi-Fi
      * would fragment. */

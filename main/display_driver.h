@@ -5,6 +5,7 @@
 #include "esp_err.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
+#include "hwcfg.h"
 
 /* A display driver brings up its bus and panel and hands back esp_lcd
  * handles. Pixels go out through esp_lcd_panel_draw_bitmap on the panel
@@ -21,9 +22,9 @@ typedef struct {
 
 typedef struct {
     const char *name;
-    /* buf_lines: rows per flush, so the bus can take a whole draw buffer.
-     * Leaves the backlight off. */
-    esp_err_t (*init)(int buf_lines, display_panel_t *out);
+    /* hw: pins and panel options. buf_lines: rows per flush, so the bus can
+     * take a whole draw buffer. Leaves the backlight off. */
+    esp_err_t (*init)(const hwcfg_t *hw, int buf_lines, display_panel_t *out);
     void (*backlight)(bool on);
 } display_driver_t;
 

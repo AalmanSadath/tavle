@@ -15,6 +15,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "hwcfg.h"
 #include "mdns.h"
 #include "nvs.h"
 #include "settings.h"
@@ -419,11 +420,11 @@ esp_err_t net_start(net_status_cb_t cb)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
-#if CONFIG_TAVLE_WIFI_TX_POWER_QDBM > 0
-    /* Many small ESP32-C3 boards have a poorly matched antenna; at full
-     * power the signal distorts and other devices cannot receive it. */
-    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(CONFIG_TAVLE_WIFI_TX_POWER_QDBM));
-#endif
+    if (hwcfg()->tx_power_qdbm > 0) {
+        /* Many small ESP32-C3 boards have a poorly matched antenna; at full
+         * power the signal distorts and other devices cannot receive it. */
+        ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(hwcfg()->tx_power_qdbm));
+    }
 
     const esp_timer_create_args_t fb = {.callback = on_timer, .arg = (void *)EV_FALLBACK,
                                         .name = "net_fallback"};

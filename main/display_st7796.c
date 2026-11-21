@@ -13,9 +13,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-/* ST7796, 320 x 480 portrait, four-wire SPI. Pins, SPI host and clock, and
- * the panel options (colour order, invert, mirror) come from the board
- * header. */
+/* ST7796, 320 x 480 portrait, four-wire SPI. Pins, SPI clock and the panel
+ * options (colour order, invert, mirror) come from the hardware config, the
+ * SPI host from the variant. MISO, RST and BL are optional: without MISO the
+ * ID read is skipped, without RST the panel gets a software reset only. */
 
 static const char *TAG = "st7796";
 
@@ -31,13 +32,14 @@ typedef struct {
 } st7796_id_t;
 
 static size_t s_max_transfer;
+static const hwcfg_t *s_hw;
 
 static esp_err_t bus_init(bool with_miso)
 {
     const spi_bus_config_t bus = {
-        .sclk_io_num = TAVLE_PIN_LCD_SCK,
-        .mosi_io_num = TAVLE_PIN_LCD_MOSI,
-        .miso_io_num = with_miso ? TAVLE_PIN_LCD_MISO : -1,
+        .sclk_io_num = s_hw->sck,
+        .mosi_io_num = s_hw->mosi,
+        .miso_io_num = with_miso ? s_hw->miso : -1,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = s_max_transfer,
@@ -47,9 +49,12 @@ static esp_err_t bus_init(bool with_miso)
 
 static void hw_reset(void)
 {
-    gpio_set_level(TAVLE_PIN_LCD_RST, 0);
+    if (s_hw->rst < 0) {
+        return;
+    }
+    gpio_set_level(s_hw->rst, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(TAVLE_PIN_LCD_RST, 1);
+    gpio_set_level(s_hw->rst, 1);
     vTaskDelay(pdMS_TO_TICKS(120));
 }
 
@@ -64,7 +69,7 @@ static esp_err_t read_reg(spi_device_handle_t dev, uint8_t cmd, uint8_t *out, si
         .length = 8,
         .tx_data = {cmd},
     };
-    gpio_set_level(TAVLE_PIN_LCD_DC, 0);
+    gpio_set_level(s_hw->dc, 0);
     esp_err_t err = spi_device_polling_transmit(dev, &t);
 
     if (err == ESP_OK) {
@@ -72,7 +77,7 @@ static esp_err_t read_reg(spi_device_handle_t dev, uint8_t cmd, uint8_t *out, si
         t.flags = SPI_TRANS_USE_RXDATA;
         t.length = 8 * n;
         t.rxlength = 8 * n;
-        gpio_set_level(TAVLE_PIN_LCD_DC, 1);
+        gpio_set_level(s_hw->dc, 1);
         err = spi_device_polling_transmit(dev, &t);
         memcpy(out, t.rx_data, n);
     }
@@ -90,7 +95,7 @@ static uint32_t unshift_dummy_bit(const uint8_t b[4])
 static esp_err_t read_id(st7796_id_t *id)
 {
     const gpio_config_t out = {
-        .pin_bit_mask = BIT64(TAVLE_PIN_LCD_DC) | BIT64(TAVLE_PIN_LCD_RST),
+        .pin_bit_mask = BIT64(s_hw->dc) | (s_hw->rst >= 0 ? BIT64(s_hw->rst) : 0),
         .mode = GPIO_MODE_OUTPUT,
     };
     ESP_RETURN_ON_ERROR(gpio_config(&out), TAG, "gpio");
@@ -101,7 +106,7 @@ static esp_err_t read_id(st7796_id_t *id)
     const spi_device_interface_config_t devcfg = {
         .clock_speed_hz = 1 * 1000 * 1000,
         .mode = 0,
-        .spics_io_num = TAVLE_PIN_LCD_CS,
+        .spics_io_num = s_hw->cs,
         .queue_size = 1,
     };
     spi_device_handle_t dev;
@@ -128,29 +133,34 @@ static esp_err_t read_id(st7796_id_t *id)
     return err;
 }
 
-static esp_err_t st7796_init(int buf_lines, display_panel_t *out)
+static esp_err_t st7796_init(const hwcfg_t *hw, int buf_lines, display_panel_t *out)
 {
+    s_hw = hw;
     s_max_transfer = (size_t)WIDTH * buf_lines * sizeof(uint16_t);
     st7796_id_t id = {0};
-    if (read_id(&id) != ESP_OK) {
+    if (hw->miso < 0) {
+        ESP_LOGI(TAG, "no MISO, ID read skipped");
+    } else if (read_id(&id) != ESP_OK) {
         ESP_LOGW(TAG, "ID read failed, continuing");
     }
 
-    const gpio_config_t bl = {
-        .pin_bit_mask = BIT64(TAVLE_PIN_LCD_BL),
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&bl), TAG, "bl gpio");
-    gpio_set_level(TAVLE_PIN_LCD_BL, 0);
+    if (hw->bl >= 0) {
+        const gpio_config_t bl = {
+            .pin_bit_mask = BIT64(hw->bl),
+            .mode = GPIO_MODE_OUTPUT,
+        };
+        ESP_RETURN_ON_ERROR(gpio_config(&bl), TAG, "bl gpio");
+        gpio_set_level(hw->bl, 0);
+    }
 
     /* Pixel data only goes out, so the running bus has no MISO and every
      * remaining pin sits on IOMUX. */
     ESP_RETURN_ON_ERROR(bus_init(false), TAG, "bus");
 
     const esp_lcd_panel_io_spi_config_t io_cfg = {
-        .dc_gpio_num = TAVLE_PIN_LCD_DC,
-        .cs_gpio_num = TAVLE_PIN_LCD_CS,
-        .pclk_hz = CONFIG_TAVLE_LCD_SPI_MHZ * 1000 * 1000,
+        .dc_gpio_num = s_hw->dc,
+        .cs_gpio_num = s_hw->cs,
+        .pclk_hz = hw->spi_mhz * 1000 * 1000,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
         .spi_mode = 0,
@@ -160,22 +170,22 @@ static esp_err_t st7796_init(int buf_lines, display_panel_t *out)
                                                  &io_cfg, &out->io), TAG, "panel io");
 
     const esp_lcd_panel_dev_config_t panel_cfg = {
-        .reset_gpio_num = TAVLE_PIN_LCD_RST,
-        .rgb_ele_order = TAVLE_LCD_BGR ? LCD_RGB_ELEMENT_ORDER_BGR : LCD_RGB_ELEMENT_ORDER_RGB,
+        .reset_gpio_num = hw->rst,
+        .rgb_ele_order = hw->bgr ? LCD_RGB_ELEMENT_ORDER_BGR : LCD_RGB_ELEMENT_ORDER_RGB,
         .bits_per_pixel = 16,
     };
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_st7796(out->io, &panel_cfg, &out->panel), TAG, "panel");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(out->panel), TAG, "reset");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_init(out->panel), TAG, "init");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(out->panel, TAVLE_LCD_INVERT), TAG, "invert");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(out->panel, TAVLE_LCD_MIRROR_X, TAVLE_LCD_MIRROR_Y),
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(out->panel, hw->invert), TAG, "invert");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(out->panel, hw->mirror_x, hw->mirror_y),
                         TAG, "mirror");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(out->panel, true), TAG, "on");
 
     out->width = WIDTH;
     out->height = HEIGHT;
-    out->mirror_x = TAVLE_LCD_MIRROR_X;
-    out->mirror_y = TAVLE_LCD_MIRROR_Y;
+    out->mirror_x = hw->mirror_x;
+    out->mirror_y = hw->mirror_y;
     out->swap_xy = false;
     out->swap_bytes = true; /* the panel takes RGB565 high byte first */
     return ESP_OK;
@@ -183,7 +193,9 @@ static esp_err_t st7796_init(int buf_lines, display_panel_t *out)
 
 static void st7796_backlight(bool on)
 {
-    gpio_set_level(TAVLE_PIN_LCD_BL, on);
+    if (s_hw && s_hw->bl >= 0) {
+        gpio_set_level(s_hw->bl, on);
+    }
 }
 
 const display_driver_t display_st7796 = {

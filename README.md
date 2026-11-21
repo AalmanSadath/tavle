@@ -11,6 +11,10 @@ from a URL, and shows live printer data from Moonraker. The `http-json` and
 
 ## Wiring
 
+The pins are not fixed in the firmware: they are part of the hardware config
+(see Hardware config), so any free pins work. The reference wiring below is
+what the firmware uses when no hardware config is written.
+
 | Display pin | ESP32-C3 GPIO | ESP32-S3 GPIO |
 |---|---|---|
 | VCC | 3V3 | 3V3 |
@@ -232,30 +236,47 @@ widely used authority; self-signed certificates are refused.
 ## Firmware update
 
 Over USB with `idf.py flash`, or on the setup page: choose
-`build/<board>/tavle.bin` (for example `build/c3/tavle.bin`)
+`build/<variant>/tavle.bin` (for example `build/c3/tavle.bin`)
 and press upload firmware. The device checks the file, restarts into it, and
 goes back to the previous firmware if the new one fails to start.
 
 ## Wi-Fi range
 
 Some small ESP32-C3 boards only work with reduced Wi-Fi transmit power, so
-the C3 build caps it at 8.5 dBm by default. If the device cannot reach your router,
-raise `TAVLE_WIFI_TX_POWER_QDBM` in `idf.py menuconfig` (tavle menu).
+the C3 reference wiring caps it at 8.5 dBm (`"wifi_tx_power_qdbm": 34`). If
+the device cannot reach your router, raise it in the hardware config in small
+steps (up to 84, 21 dBm), or set 0 for the chip default.
+
+## Hardware config
+
+The firmware is built once per chip variant. How the board is wired, which
+display it drives and how, and the Wi-Fi power limit are the hardware config,
+kept in its own place in flash. It survives firmware updates, and Wi-Fi,
+settings and the device name stay when it changes.
+
+| Variant | Chip | Flash | PSRAM |
+|---|---|---|---|
+| `c3` | ESP32-C3 | 4 MB | none |
+| `s3-n16r8` | ESP32-S3 (for example ESP32-S3-WROOM-1 N16R8) | 16 MB | 8 MB octal |
+
+Displays: ST7796 320 x 480 over four-wire SPI (`st7796`).
 
 ## Build and flash
 
-Requires ESP-IDF v5.4.
-
-Pick the board with `-DBOARD=` and give each board its own build directory:
+Requires ESP-IDF v5.4. Pick the variant with `-DVARIANT=` and give each
+variant its own build directory:
 
 ```sh
-idf.py -B build/c3 -DBOARD=c3 build
-idf.py -B build/c3 -DBOARD=c3 -p /dev/ttyACM0 flash monitor
+idf.py -B build/c3 -DVARIANT=c3 build
+idf.py -B build/c3 -DVARIANT=c3 -p /dev/ttyACM0 flash monitor
 
-idf.py -B build/s3 -DBOARD=s3 build
+idf.py -B build/s3-n16r8 -DVARIANT=s3-n16r8 build
 ```
 
-Each board has limits that fit its memory; the setup page shows them. They
+Flashing by hand leaves the hardware config as it is; a board that never had
+one uses the reference wiring.
+
+Each variant has limits that fit its memory; the setup page shows them. They
 apply per screen, see Screens.
 
 | | ESP32-C3 | ESP32-S3 |

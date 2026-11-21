@@ -15,6 +15,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "fetch.h"
+#include "hwcfg.h"
 #include "sources.h"
 #include "timesync.h"
 #include "ui.h"
@@ -175,6 +176,11 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddNumberToObject(b, "max_sources", board_profile.max_sources);
     cJSON_AddNumberToObject(b, "max_images", board_profile.max_images);
     cJSON_AddBoolToObject(b, "keep_running", board_profile.keep_running);
+    cJSON_AddStringToObject(b, "variant", board_profile.variant);
+    cJSON *hw = hwcfg_to_json(hwcfg());
+    cJSON_AddBoolToObject(hw, "saved", hwcfg_is_saved());
+    cJSON_AddStringToObject(hw, "problem", hwcfg_problem());
+    cJSON_AddItemToObject(o, "hardware", hw);
     ui_screen_info_t si;
     ui_get_screen_info(&si);
     cJSON *scr = cJSON_AddObjectToObject(o, "screen");
