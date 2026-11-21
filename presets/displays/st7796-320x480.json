@@ -1,0 +1,5 @@
+{
+  "name": "ST7796 3.5\" 320 x 480, four-wire SPI",
+  "display": { "driver": "st7796", "spi_mhz": 40, "bgr": true, "invert": false,
+               "mirror_x": true, "mirror_y": false }
+}

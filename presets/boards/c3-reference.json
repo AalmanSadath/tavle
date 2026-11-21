@@ -1,0 +1,6 @@
+{
+  "board": "ESP32-C3 reference",
+  "variant": "c3",
+  "pins": { "sck": 6, "mosi": 7, "miso": 5, "cs": 10, "dc": 4, "rst": 3, "bl": 1, "button": 0 },
+  "wifi_tx_power_qdbm": 34
+}
