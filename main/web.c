@@ -439,6 +439,46 @@ static esp_err_t reboot_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* New hardware config: checked, saved, then the device restarts into it. */
+static esp_err_t hardware_post(httpd_req_t *req)
+{
+    if (!guard(req, "application/json")) {
+        return ESP_OK;
+    }
+    if (req->content_len == 0 || req->content_len > HWCFG_JSON_MAX) {
+        return send_error(req, "413 Content Too Large", "body too large");
+    }
+    char *body = malloc(req->content_len);
+    if (!body) {
+        return send_error(req, "500 Internal Server Error", "out of memory");
+    }
+    size_t got = 0;
+    while (got < req->content_len) {
+        int r = httpd_req_recv(req, body + got, req->content_len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (r <= 0) {
+            free(body);
+            return ESP_FAIL;
+        }
+        got += r;
+    }
+    char err[96];
+    esp_err_t e = hwcfg_save(body, got, err, sizeof(err));
+    free(body);
+    if (e == ESP_ERR_INVALID_ARG || e == ESP_ERR_INVALID_SIZE) {
+        return send_error(req, "400 Bad Request", err);
+    }
+    if (e != ESP_OK) {
+        return send_error(req, "500 Internal Server Error", err);
+    }
+    ESP_LOGI(TAG, "hardware config saved, rebooting");
+    send_ok(req);
+    reboot_soon();
+    return ESP_OK;
+}
+
 static esp_err_t update_post(httpd_req_t *req)
 {
     if (!guard(req, "application/octet-stream")) {
@@ -543,6 +583,7 @@ esp_err_t web_start(void)
         {.uri = "/api/screen", .method = HTTP_POST, .handler = screen_post},
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = reboot_post},
         {.uri = "/api/update", .method = HTTP_POST, .handler = update_post},
+        {.uri = "/api/hardware", .method = HTTP_POST, .handler = hardware_post},
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         httpd_register_uri_handler(server, &routes[i]);

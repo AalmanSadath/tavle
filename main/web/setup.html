@@ -13,7 +13,7 @@ h1{font-size:28px;margin:8px 0 16px}
 h2{font-size:15px;color:var(--dim);font-weight:600;margin:0 0 10px;text-transform:lowercase}
 section{background:var(--card);border-radius:12px;padding:16px;margin-bottom:16px}
 label{display:block;font-size:14px;color:var(--dim);margin:10px 0 4px}
-input,select{width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);background:#000;color:var(--text);font:inherit}
+input,select,textarea{width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);background:#000;color:var(--text);font:inherit}
 button{padding:10px 14px;border-radius:8px;border:0;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
 button.alt{background:var(--line)}
 button:disabled{opacity:.5}
@@ -28,6 +28,7 @@ button:disabled{opacity:.5}
 .msg{font-size:14px;margin-top:10px;min-height:1.4em}
 .msg.ok{color:var(--good)}.msg.err{color:var(--bad)}
 progress{width:100%;margin-top:10px}
+textarea{font:13px/1.4 ui-monospace,monospace;min-height:220px;resize:vertical}
 </style>
 </head>
 <body>
@@ -98,6 +99,17 @@ progress{width:100%;margin-top:10px}
 </section>
 
 <section>
+  <h2>hardware</h2>
+  <dl class="kv" id="hw"></dl>
+  <p class="note" id="hwproblem" hidden></p>
+  <label for="hwjson">hardware config (pins, display, Wi-Fi power)</label>
+  <textarea id="hwjson" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+  <p class="hint">Saving restarts the device. Wrong pins only lose the screen or the button; this page stays reachable.</p>
+  <div class="row" style="margin-top:10px"><button id="hwsave" type="button">save and restart</button></div>
+  <p class="msg" id="hwmsg"></p>
+</section>
+
+<section>
   <h2>firmware</h2>
   <input id="fw" type="file" accept=".bin,application/octet-stream">
   <div class="row" style="margin-top:10px"><button id="upload" type="button">upload firmware</button></div>
@@ -146,8 +158,9 @@ function showStatus(s) {
     ["screen", s.screen.count ? s.screen.name + " (" + (s.screen.index + 1) + " of " + s.screen.count + ")" : "none"],
     ["keep screens running", (s.keep_running_on ? "on" : "off") + " (" + s.keep_running_from + ")"],
     ["time", s.time || "not set yet"],
-    ["board", s.board.name + ", " + plural(s.board.max_sources, "source") + ", " +
+    ["board", s.board.name + " (" + s.board.variant + "), " + plural(s.board.max_sources, "source") + ", " +
       plural(s.board.max_images, "image")],
+    ["hardware", s.hardware.board + (s.hardware.saved ? "" : " (default)")],
     ["firmware", s.version + " in " + s.slot],
     ["free memory", Math.round(s.free_heap / 1024) + " KB" +
       (s.psram_size ? " internal, " + (s.psram_free / 1048576).toFixed(1) + " MB PSRAM" : "")],
@@ -163,6 +176,34 @@ function showStatus(s) {
     dl.append(dt, dd);
   }
   $("opennote").hidden = s.has_password;
+  showHardware(s.hardware);
+}
+
+function hwConfig(h) {
+  return {board: h.board, display: h.display, pins: h.pins, wifi_tx_power_qdbm: h.wifi_tx_power_qdbm};
+}
+
+function showHardware(h) {
+  const p = h.pins, d = h.display;
+  const pin = n => n < 0 ? "none" : "GPIO " + n;
+  const rows = [
+    ["config", h.saved ? "saved" : "variant default"],
+    ["display", d.driver + " at " + d.spi_mhz + " MHz" +
+      ["bgr", "invert", "mirror_x", "mirror_y"].filter(k => d[k]).map(k => ", " + k).join("")],
+    ["spi", "SCK " + pin(p.sck) + ", MOSI " + pin(p.mosi) + ", MISO " + pin(p.miso) + ", CS " + pin(p.cs)],
+    ["panel", "DC " + pin(p.dc) + ", RST " + pin(p.rst) + ", BL " + pin(p.bl)],
+    ["button", pin(p.button)],
+    ["wi-fi power", h.wifi_tx_power_qdbm ? "max " + h.wifi_tx_power_qdbm / 4 + " dBm" : "chip default"],
+  ];
+  const dl = $("hw");
+  dl.replaceChildren();
+  for (const [k, v] of rows) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+  $("hwproblem").hidden = !h.problem;
+  $("hwproblem").textContent = h.problem ? h.problem + "; the variant default is in use." : "";
 }
 
 async function refresh(fillForm) {
@@ -177,6 +218,7 @@ async function refresh(fillForm) {
     $("keep").value = s.keep_running;
     $("dname").value = s.device_name;
     $("wpass").placeholder = s.ssid ? "unchanged" : "";
+    $("hwjson").value = JSON.stringify(hwConfig(s.hardware), null, 2);
   }
   return s;
 }
@@ -296,6 +338,19 @@ $("reboot").onclick = async () => {
   if (!confirm("reboot tavle?")) return;
   try { await api("/api/reboot", {method: "POST"}); say($("msg"), "rebooting", "ok"); }
   catch (e) { say($("msg"), e.message, "err"); }
+};
+
+$("hwsave").onclick = async () => {
+  const msg = $("hwmsg");
+  let cfg;
+  try { cfg = JSON.parse($("hwjson").value); } catch (e) { say(msg, "not valid JSON: " + e.message, "err"); return; }
+  if (!confirm("save the hardware config and restart?")) return;
+  $("hwsave").disabled = true;
+  try {
+    await api("/api/hardware", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(cfg)});
+    say(msg, "saved. restarting, reload this page in about 15 seconds.", "ok");
+  } catch (e) { say(msg, e.message, "err"); }
+  $("hwsave").disabled = false;
 };
 
 $("upload").onclick = () => {

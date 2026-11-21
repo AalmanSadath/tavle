@@ -302,6 +302,14 @@ is a pin used twice. The answers are saved to `tavle-hw.json`.
 Above 40 MHz, SCK, MOSI and CS must be on the chip's fast SPI pins (C3: 6, 7,
 10; S3: 12, 11, 10).
 
+### On the setup page
+
+The hardware section shows the config in use and lets you edit it as JSON.
+Saving checks it and restarts the device. Wrong but valid pins only cost the
+screen or the button; the setup page stays reachable over Wi-Fi. A saved
+config that is damaged or not valid for the chip is ignored: the device uses
+the reference wiring and the page says why.
+
 ## Build and flash
 
 Requires ESP-IDF v5.4. The setup tool above does all of this. By hand, pick
